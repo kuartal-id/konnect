@@ -1,0 +1,25 @@
+{
+  "name": "konnect",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kuartal Konnect: encrypted messaging, workspaces and a personal CRM, built on Matrix.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p . && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "matrix-js-sdk": "^44.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
+  }
+}
