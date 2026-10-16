@@ -1,21 +1,23 @@
 # Konnect — Status
 
-_Last updated: 2026-10-16 (evening) by Claude. Every AI updates this file before finishing (see AGENTS.md)._
+_Last updated: 2026-10-17 (night) by Claude. Every AI updates this file before finishing (see AGENTS.md)._
 
 ## Current stage
 
-**M1 shipped; M1.5 (discovery + server ready for the VPS) in PR #2.** The web app is live at `konnect.kuartalsystems.com` (merged PR #1). Sign-in works once the chat server is running on the VPS.
+**Live.** Web app at `konnect.kuartalsystems.com`, chat server at `matrix.kuartalsystems.com` on the Kuartal VPS behind host Caddy (docs/SERVER.md). Diemas signed in with Kuartal ID on 2026-10-17.
 
-PR #2 adds: finding people by @handle, name or verified phone number, each with a per-person on/off setting; Konnect-branded handle picker on first sign-in; a server file with nothing to fill in, defaulting to `kuartal.id` IDs and the Kuartal ID client; a setup that applies setting changes on every redeploy. Companion PR in `kuartal-id/kuartal-login` registers the Kuartal ID client.
+**M2 (everyday features) in PR #4:** encrypted files and photos; reply, edit, delete, reactions; emoji verification with contacts and between own devices, plus identity-change warnings; chat info (members, rename, leave, block); browser notifications; first-run setup; installable app (manifest and icons).
 
 ## Waiting on Diemas
 
-1. "go" on `konnect` PR #2 and the `kuartal-login` Konnect client PR.
-2. DNS A record `matrix.kuartalsystems.com` → the VPS IP.
-3. Start the server on the VPS (docs/SERVER.md step 3: Docker Manager → deploy from URL, or one line in the browser terminal).
-4. Optional, for phone discovery: WhatsApp Cloud API number + `konnect_code` authentication template + token (docs/SERVER.md).
+1. "go" on PR #3 (docs) and PR #4 (everyday features).
+2. Optional: WhatsApp Cloud API number, `konnect_code` template and token for phone verification (docs/SERVER.md).
 
 ## Next up
+
+- Push notifications when Konnect is closed: needs a push gateway (Sygnal) on the VPS, a service worker, and VAPID keys made on the server.
+- Sign out other devices from Settings: needs the Kuartal ID re-authentication step (SSO fallback page) that the server asks for.
+- Voice/video calls (Element Call / LiveKit on the VPS).
 
 - After the server is live: switch the KuartalOS manifest (`kuartal-id/kuartalos` `registry/apps/konnect.json`) from `planned` to `beta`.
 
@@ -26,7 +28,6 @@ PR #2 adds: finding people by @handle, name or verified phone number, each with 
 
 ## Known limitations
 
-- Ports 80/443 on the shared VPS belong to Konnect's Caddy. The KuartalOS `api.os` plan must add its site there instead of installing host Caddy (docs/SERVER.md).
 - Phone discovery needs the WhatsApp Cloud API set up; until then the app says it isn't switched on.
 - Rate limits for phone lookups are kept in memory (reset on server restart). Fine for one Synapse process.
 

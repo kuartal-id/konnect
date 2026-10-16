@@ -28,7 +28,9 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   );
 }
 
-export type IconName = "chat" | "contacts" | "plus" | "lock" | "send" | "back" | "panel" | "search" | "settings" | "shield" | "user-plus" | "close" | "link";
+export type IconName =
+  | "chat" | "contacts" | "plus" | "lock" | "send" | "back" | "panel" | "search" | "settings" | "shield" | "user-plus" | "close" | "link"
+  | "clip" | "reply" | "smile" | "edit" | "trash" | "info" | "check" | "warn" | "file" | "download" | "bell";
 
 const PATHS: Record<IconName, JSX.Element> = {
   chat: <path d="M4 5h16v11H9l-5 4z" />,
@@ -74,4 +76,25 @@ const PATHS: Record<IconName, JSX.Element> = {
   ),
   close: <path d="M6 6l12 12M18 6 6 18" />,
   link: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" />,
+  clip: <path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7L9.2 17.2a1.7 1.7 0 0 1-2.4-2.4L14.5 7" />,
+  reply: <path d="M10 8 5 12l5 4M5 12h9a5 5 0 0 1 5 5v1" />,
+  smile: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8M9.3 9.8h.01M14.7 9.8h.01" />
+    </>
+  ),
+  edit: <path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />,
+  trash: <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12M10.5 11v5M13.5 11v5" />,
+  info: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 11v5M12 8h.01" />
+    </>
+  ),
+  check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  warn: <path d="M12 4 2.8 19.5h18.4zM12 10v4.5M12 17h.01" />,
+  file: <path d="M7 3h7l5 5v13H7zM14 3v5h5" />,
+  download: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />,
+  bell: <path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0" />,
 };

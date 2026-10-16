@@ -2,6 +2,7 @@
 
 # The encryption engine is a WebAssembly file; browsers need the right type to load it fast.
 AddType application/wasm .wasm
+AddType application/manifest+json .webmanifest
 
 <IfModule mod_headers.c>
   # Allow Konnect to open inside KuartalOS windows, and nowhere else.

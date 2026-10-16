@@ -1,0 +1,10 @@
+# For a VPS that already runs Caddy (or another web server) on ports 80/443, like the Kuartal VPS.
+# Put this file next to docker-compose.yml as docker-compose.override.yml. Docker Compose loads it
+# automatically, so updates (downloading docker-compose.yml again) keep it.
+# It stops Konnect's own Caddy and makes the chat server reachable on this machine only.
+services:
+  caddy:
+    profiles: ["bundled-proxy"]
+  synapse:
+    ports:
+      - "127.0.0.1:8008:8008"

@@ -1,0 +1,8 @@
+# Site block for the VPS's own Caddy. Saved as /etc/caddy/konnect.caddy and loaded by one line
+# at the end of /etc/caddy/Caddyfile:  import /etc/caddy/konnect.caddy
+matrix.kuartalsystems.com {
+	encode zstd gzip
+	reverse_proxy /_matrix/* 127.0.0.1:8008
+	reverse_proxy /_synapse/client/* 127.0.0.1:8008
+	respond / "Konnect server is running." 200
+}

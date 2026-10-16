@@ -106,7 +106,9 @@ function previewOf(ev: MatrixEvent, client: MatrixClient): string {
   if (ev.isDecryptionFailure()) return "Locked message";
   if (ev.getType() === EventType.RoomMessageEncrypted) return "";
   if (ev.getType() !== EventType.RoomMessage) return "";
+  if (ev.isRelation("m.replace")) return "";
   const c = ev.getContent() as { body?: string; msgtype?: string };
+  if (c.msgtype === "m.key.verification.request") return "Security verification";
   const body = c.msgtype === "m.image" ? "Photo" : c.msgtype === "m.file" ? "File" : c.body ?? "";
   return mine ? `You: ${body}` : body;
 }

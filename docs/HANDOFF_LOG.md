@@ -2,6 +2,31 @@
 
 Newest first. Every AI adds an entry before finishing.
 
+## 2026-10-17 (night) — Claude — `claude/4-everyday-features`
+
+**Did:** Everything needed for Kuartal ID users to use Konnect day to day:
+- Encrypted files and photos (`src/lib/attachments.ts`): AES-256-CTR per the spec, authenticated media download, hash check, only safe image types inline; paperclip, drag and drop, paste.
+- Reply, edit (own text, ArrowUp edits last), delete (own, confirmed), reactions (`src/lib/messages.ts`, actions on hover or tap).
+- Verification (`src/components/Verification.tsx`, `src/lib/trust.ts`): emoji with contacts (DM request) and own devices; incoming requests open automatically; verified shield; identity-change banner with Verify / I understand.
+- Chat info (`src/components/ChatInfo.tsx`): members with trust, rename, invite, leave, block. Settings: devices list with verified state, blocked people, notifications (off / show / hide text). Invites can be declined and blocked.
+- First-run setup (`src/components/Onboarding.tsx`): name, how people find you, notifications, then recovery key. The done flag (`id.kuartal.konnect.onboarding`) is read straight from the server, because a local-cache race showed it again in testing.
+- Installable app: `manifest.webmanifest`, PNG and maskable icons, apple-touch-icon; app badge for unread.
+- Fixes: chat-list preview of verification requests and edits; contact panel no longer covers phone screens.
+
+**Tested:** New two-browser suite, 13/13: onboarding, DM, reply, edit, reaction, encrypted photo shown, file downloaded byte-for-byte, server sees only `m.room.encrypted`, delete, contact emoji verification (both saw identical emoji), second device verified from the first and reads history, block. Discovery suite 7/7, core suite 13/13 (onboarding-aware), typecheck and build.
+
+**Not done / known issues:** Push when closed, remote sign-out of other devices, calls, message search (see STATUS "Next up"). Notifications on iOS need the app installed to the home screen (iOS 16.4+).
+
+**Next AI should:** After merge, sanity-check on production: send a photo between two real accounts and do one emoji verification.
+
+## 2026-10-17 — Claude — `claude/3-shared-caddy`
+
+**Did:** Deployed the chat server on the Kuartal VPS with Diemas. `docker compose up` started setup, Postgres and Synapse healthy, but Konnect's Caddy couldn't bind :80, because the VPS already runs host Caddy (KuartalOS `api.os` pilot). Fix applied on the VPS: `docker-compose.override.yml` (Konnect Caddy behind a profile, Synapse on `127.0.0.1:8008`) plus `/etc/caddy/konnect.caddy` imported from the host Caddyfile, validated before reload. Verified from outside: HTTPS works, and `/_matrix/client/v3/login` offers `oidc-kuartal` (Kuartal ID). This PR records both files in `server/shared-proxy/` and documents the setup and update command.
+
+**Not done / known issues:** First real Kuartal ID sign-in pending (Diemas). WhatsApp codes not configured.
+
+**Next AI should:** Don't install another web server on 80/443 on this VPS. Add sites to `/etc/caddy/` with `import` like Konnect does.
+
 ## 2026-10-16 (evening) — Claude — `claude/2-discovery`
 
 **Did:** Diemas asked to find people by @handle or phone number, with each person choosing how they're found, and to run the server on the VPS that already hosts Kuartal AI. He delegated the remaining decisions:

@@ -5,6 +5,12 @@ import { ChatView } from "./ChatView";
 import { CrmPanel } from "./CrmPanel";
 import { ContactsView } from "./ContactsView";
 import { InviteDialog, NewChatDialog, RecoveryPrompt, SettingsDialog, SetupRecoveryDialog } from "./Dialogs";
+import { ChatInfo } from "./ChatInfo";
+import { VerificationDialog } from "./Verification";
+import { isOnboardingDone, needsOnboarding, Onboarding } from "./Onboarding";
+import { CryptoEvent, VerificationPhase, type VerificationRequest } from "matrix-js-sdk/lib/crypto-api/index.js";
+import { setAppBadge, showNotification } from "../lib/notify";
+import { messageText } from "../lib/messages";
 import { useClientVersion, useNarrow } from "../lib/hooks";
 import { directPartner, listChats, openDirectChat, roomNetwork, workspaceChildren, type ChatSummary } from "../lib/rooms";
 import { getSecurityState, setRecoveryKeyPrompt, unlockWithRecoveryKey, type SecurityState } from "../lib/matrix";
@@ -20,7 +26,7 @@ export type CrmState =
   | { status: "unlocked"; data: CrmData; saving: boolean };
 
 type Section = "chats" | "contacts";
-type Dialog = null | "new" | "new-workspace" | "invite" | "setup" | "settings";
+type Dialog = null | "new" | "new-workspace" | "invite" | "setup" | "settings" | "info";
 
 export function Workspace({ client, os, onSignOut }: {
   client: MatrixClient;
@@ -41,9 +47,30 @@ export function Workspace({ client, os, onSignOut }: {
   const [security, setSecurity] = useState<SecurityState | null>(null);
   const [crm, setCrm] = useState<CrmState>({ status: "loading" });
   const [prompt, setPrompt] = useState<{ hint: string; resolve: (v: string | null) => void } | null>(null);
+  const [verification, setVerification] = useState<VerificationRequest | null>(null);
+  const [onboarding, setOnboarding] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void needsOnboarding(client).then((need) => live && setOnboarding(need));
+    // Finished on another device (or the answer arrived late): close it.
+    const onAccountData = (ev: MatrixEvent) => {
+      if (isOnboardingDone(ev)) setOnboarding(false);
+    };
+    client.on(ClientEvent.AccountData, onAccountData);
+    return () => {
+      live = false;
+      client.off(ClientEvent.AccountData, onAccountData);
+    };
+  }, [client]);
   const crmKey = useRef<CryptoKey | null>(null);
   const roomIdRef = useRef(roomId);
   roomIdRef.current = roomId;
+
+  // On a phone-width screen the contact panel covers the chat, so it only opens when asked for.
+  useEffect(() => {
+    if (narrow) setCrmOpen(false);
+  }, [narrow]);
 
   // ---- Encryption and CRM ------------------------------------------------------------------
 
@@ -135,17 +162,60 @@ export function Workspace({ client, os, onSignOut }: {
     [client],
   );
 
-  // ---- Notifications through KuartalOS ----------------------------------------------------
+  // ---- Verification requests from other people or my other devices -------------------------
+
+  useEffect(() => {
+    const onRequest = (req: VerificationRequest) => {
+      if (!req.initiatedByMe && req.phase === VerificationPhase.Requested) setVerification(req);
+    };
+    client.on(CryptoEvent.VerificationRequestReceived, onRequest);
+    return () => {
+      client.off(CryptoEvent.VerificationRequestReceived, onRequest);
+    };
+  }, [client]);
+
+  const verifyUser = useCallback(
+    async (userId: string) => {
+      const crypto = client.getCrypto();
+      if (!crypto) return;
+      try {
+        const current = roomIdRef.current ? client.getRoom(roomIdRef.current) : null;
+        const dm = current && directPartner(client, current) === userId ? current.roomId : await openDirectChat(client, userId);
+        setDialog(null);
+        setVerification(await crypto.requestVerificationDM(userId, dm));
+      } catch (e) {
+        setToast(`Couldn't start verification: ${errorText(e)}`);
+      }
+    },
+    [client],
+  );
+
+  const verifyThisDevice = useCallback(async () => {
+    try {
+      setDialog(null);
+      setVerification((await client.getCrypto()?.requestOwnUserVerification()) ?? null);
+    } catch (e) {
+      setToast(`Couldn't start verification: ${errorText(e)}`);
+    }
+  }, [client]);
+
+  // ---- Notifications (KuartalOS, or the browser) ---------------------------------------------
 
   useEffect(() => {
     const onTimeline = async (ev: MatrixEvent, room: Room | undefined, toStart: boolean | undefined, _removed: boolean, data: { liveEvent?: boolean }) => {
       if (toStart || !data?.liveEvent || !room || ev.getSender() === me) return;
-      if (room.roomId === roomIdRef.current && document.hasFocus()) return;
+      if (room.roomId === roomIdRef.current && document.hasFocus() && !document.hidden) return;
       if (ev.isEncrypted()) await client.decryptEventIfNeeded(ev).catch(() => undefined);
-      if (ev.getType() !== EventType.RoomMessage) return;
-      const who = room.getMember(ev.getSender() ?? "")?.name ?? ev.getSender();
-      const body = String(ev.getContent().body ?? "").slice(0, 120);
-      os?.notify(room.name === who ? `${who}: ${body}` : `${who} in ${room.name}: ${body}`);
+      if (ev.getType() !== EventType.RoomMessage || ev.isRelation("m.replace")) return;
+      if (client.getPushActionsForEvent(ev)?.notify === false) return;
+      const who = room.getMember(ev.getSender() ?? "")?.name ?? ev.getSender() ?? "";
+      const c = ev.getContent();
+      const body = c.msgtype === "m.image" ? "Photo" : c.msgtype === "m.file" ? "File" : messageText(ev).slice(0, 120);
+      if (os) os.notify(room.name === who ? `${who}: ${body}` : `${who} in ${room.name}: ${body}`);
+      else showNotification(room.name === who ? who : `${who} in ${room.name}`, body, room.roomId, () => {
+        setSection("chats");
+        setRoomId(room.roomId);
+      });
     };
     client.on(RoomEvent.Timeline, onTimeline);
     return () => {
@@ -166,6 +236,7 @@ export function Workspace({ client, os, onSignOut }: {
   useEffect(() => {
     document.title = unreadTotal ? `(${unreadTotal}) Konnect` : "Konnect";
     os?.setTitle(unreadTotal ? `Konnect (${unreadTotal})` : "Konnect");
+    setAppBadge(unreadTotal);
   }, [unreadTotal, os]);
 
   const room = roomId ? client.getRoom(roomId) : null;
@@ -293,7 +364,8 @@ export function Workspace({ client, os, onSignOut }: {
               showBack={narrow}
               onBack={() => setRoomId(null)}
               onToggleCrm={() => setCrmOpen((v) => !v)}
-              onInvite={() => setDialog("invite")}
+              onInfo={() => setDialog("info")}
+              onVerify={(userId) => void verifyUser(userId)}
               onUnlock={() => void unlock()}
               onLeft={() => setRoomId(null)}
             />
@@ -343,7 +415,45 @@ export function Workspace({ client, os, onSignOut }: {
       {dialog === "invite" && room && <InviteDialog client={client} room={room} onClose={() => setDialog(null)} />}
       {dialog === "setup" && <SetupRecoveryDialog client={client} onClose={() => setDialog(null)} onDone={() => void afterSetup()} />}
       {dialog === "settings" && (
-        <SettingsDialog client={client} security={security} onClose={() => setDialog(null)} onSignOut={onSignOut} onSecurity={() => { setDialog(null); void unlock(); }} />
+        <SettingsDialog
+          client={client}
+          security={security}
+          embedded={Boolean(os)}
+          onClose={() => setDialog(null)}
+          onSignOut={onSignOut}
+          onSecurity={() => { setDialog(null); void unlock(); }}
+          onVerifyDevice={() => void verifyThisDevice()}
+        />
+      )}
+      {dialog === "info" && room && (
+        <ChatInfo
+          client={client}
+          room={room}
+          onClose={() => setDialog(null)}
+          onInvite={() => setDialog("invite")}
+          onVerify={(userId) => void verifyUser(userId)}
+          onLeft={() => setRoomId(null)}
+        />
+      )}
+      {verification && (
+        <VerificationDialog
+          client={client}
+          request={verification}
+          onClose={() => {
+            setVerification(null);
+            void refreshSecurity();
+          }}
+        />
+      )}
+      {onboarding && !verification && (
+        <Onboarding
+          client={client}
+          embedded={Boolean(os)}
+          onDone={() => {
+            setOnboarding(false);
+            if (security && !security.hasRecovery) setDialog("setup");
+          }}
+        />
       )}
       {prompt && (
         <RecoveryPrompt
