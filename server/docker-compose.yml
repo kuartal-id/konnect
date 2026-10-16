@@ -1,0 +1,223 @@
+# Konnect chat server: Synapse (Matrix) + PostgreSQL + Caddy (automatic HTTPS).
+#
+# Made for Hostinger VPS → Docker Manager → "Compose" with no terminal:
+#   1. Paste this file (or its GitHub raw URL).
+#   2. Fill in the four settings below in the Environment section. None of them are secrets.
+#   3. Deploy.
+# On first start, the `setup` container writes the server config and creates every password
+# and key by itself, into the `synapse-data` volume. Nobody has to copy or paste a secret.
+# Full guide: docs/SERVER.md. Needs Docker Compose 2.23 or newer (Hostinger has it).
+#
+# Settings (Environment):
+#   MATRIX_HOST           Address of this server, e.g. matrix.kuartalsystems.com (DNS A record → this VPS)
+#   SERVER_NAME           The part after ":" in everyone's Konnect ID, e.g. kuartal.id → @diemas:kuartal.id
+#                         PERMANENT: it can't be changed after the first account exists.
+#   KONNECT_URL           Where the Konnect web app lives, e.g. https://konnect.kuartalsystems.com
+#   KUARTAL_ID_CLIENT_ID  The Konnect client ID registered in Kuartal ID (public client with PKCE)
+
+name: konnect
+
+services:
+  setup:
+    image: matrixdotorg/synapse:v1.163.0
+    restart: "no"
+    entrypoint: ["python", "/konnect-setup.py"]
+    environment:
+      MATRIX_HOST: ${MATRIX_HOST:?Set MATRIX_HOST}
+      SERVER_NAME: ${SERVER_NAME:?Set SERVER_NAME}
+      KONNECT_URL: ${KONNECT_URL:?Set KONNECT_URL}
+      KUARTAL_ID_CLIENT_ID: ${KUARTAL_ID_CLIENT_ID:-}
+    configs:
+      - source: konnect-setup
+        target: /konnect-setup.py
+    volumes:
+      - synapse-data:/data
+      - db-secret:/secrets
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_DB: synapse
+      POSTGRES_PASSWORD_FILE: /secrets/db_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-secret:/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  synapse:
+    image: matrixdotorg/synapse:v1.163.0
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    volumes:
+      - synapse-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8008/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [internal, web]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      synapse:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [web]
+
+networks:
+  internal:
+    internal: true
+  web: {}
+
+volumes:
+  synapse-data: {}
+  db-data: {}
+  db-secret: {}
+  caddy-data: {}
+  caddy-config: {}
+
+configs:
+  caddyfile:
+    content: |
+      ${MATRIX_HOST} {
+        encode zstd gzip
+        # Chat API and the Kuartal ID sign-in pages. The admin API stays private.
+        reverse_proxy /_matrix/* synapse:8008
+        reverse_proxy /_synapse/client/* synapse:8008
+        respond / "Konnect server is running." 200
+      }
+
+  konnect-setup:
+    content: |
+      # Writes /data/homeserver.yaml once, with fresh random secrets, then makes sure the
+      # signing key exists. Safe to run on every start: an existing config is never overwritten.
+      import os, secrets, subprocess, sys
+
+      DATA = "/data/homeserver.yaml"
+      PW_FILE = "/secrets/db_password"
+      env = os.environ
+
+      os.makedirs("/secrets", exist_ok=True)
+      if not os.path.exists(PW_FILE):
+          with open(PW_FILE, "w") as f:
+              f.write(secrets.token_urlsafe(32))
+          os.chmod(PW_FILE, 0o644)
+      db_password = open(PW_FILE).read().strip()
+
+      if os.path.exists(DATA):
+          print("Konnect setup: config already exists, leaving it as is.")
+      else:
+          host = env["MATRIX_HOST"].strip().removeprefix("https://").strip("/")
+          server_name = env["SERVER_NAME"].strip()
+          konnect = env["KONNECT_URL"].strip().rstrip("/")
+          client_id = env.get("KUARTAL_ID_CLIENT_ID", "").strip()
+          sso = ""
+          if client_id:
+              sso = f"""
+      oidc_providers:
+        - idp_id: kuartal
+          idp_name: "Kuartal ID"
+          issuer: "https://id.kuartal.id"
+          discover: true
+          client_id: "{client_id}"
+          client_auth_method: none
+          pkce_method: always
+          scopes: ["openid", "profile", "email"]
+          allow_existing_users: false
+          user_mapping_provider:
+            config:
+              localpart_template: "{{{{ user.email.split('@')[0] }}}}"
+              display_name_template: "{{{{ user.name }}}}"
+              email_template: "{{{{ user.email }}}}"
+              confirm_localpart: true
+      """
+          config = f"""# Konnect chat server. Generated once by the setup container.
+      server_name: "{server_name}"
+      public_baseurl: "https://{host}/"
+      pid_file: /data/homeserver.pid
+      report_stats: false
+
+      listeners:
+        - port: 8008
+          type: http
+          tls: false
+          x_forwarded: true
+          bind_addresses: ["0.0.0.0"]
+          resources:
+            - names: [client]
+              compress: false
+
+      # Konnect starts as a closed network: no federation with other Matrix servers.
+      federation_domain_whitelist: []
+      trusted_key_servers: []
+
+      database:
+        name: psycopg2
+        args:
+          user: synapse
+          password: "{db_password}"
+          database: synapse
+          host: db
+          cp_min: 5
+          cp_max: 10
+
+      media_store_path: /data/media_store
+      signing_key_path: /data/signing.key
+      registration_shared_secret: "{secrets.token_urlsafe(48)}"
+      macaroon_secret_key: "{secrets.token_urlsafe(48)}"
+      form_secret: "{secrets.token_urlsafe(48)}"
+      max_upload_size: 50M
+
+      # Accounts come from Kuartal ID. Open sign-up is off.
+      enable_registration: false
+      password_config:
+        enabled: true
+
+      user_directory:
+        enabled: true
+        search_all_users: true
+
+      # Allow the Konnect web app to receive the sign-in redirect.
+      sso:
+        client_whitelist:
+          - "{konnect}/"
+        update_profile_information: true
+
+      # New chats are end-to-end encrypted by default, also for other Matrix apps.
+      encryption_enabled_by_default_for_room_type: all
+
+      {sso}"""
+          with open(DATA, "w") as f:
+              f.write(config)
+          print("Konnect setup: wrote", DATA)
+
+      subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "--config-path", DATA, "--generate-keys"], check=True)
+      subprocess.run(["chown", "-R", "991:991", "/data"], check=False)
+      print("Konnect setup: done.")
