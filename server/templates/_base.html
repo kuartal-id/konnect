@@ -1,0 +1,26 @@
+{#- Konnect: replaces Synapse's default page frame (no Matrix/Element logos, no external images). -#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{% endblock %} · Konnect</title>
+    <style type="text/css">
+      {%- include 'style.css' without context %}
+      body { font-family: "Poppins", -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #16181d; background: #eef0ec; padding: 0 16px; box-sizing: border-box; }
+      .konnect-brand { display: flex; align-items: center; gap: 10px; justify-content: center; margin: 32px 0 8px; font-weight: 600; font-size: 20px; }
+      .konnect-brand svg { flex: none; }
+    </style>
+    {% block header %}{%  endblock %}
+</head>
+<body>
+<div class="konnect-brand">
+  <svg width="36" height="36" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0f766e"/><path d="M20 18v28M20 32l14-14M24 29l14 17" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="45" cy="21" r="4" fill="#fff"/></svg>
+  <span>Konnect</span>
+</div>
+
+{% block body %}{% endblock %}
+
+</body>
+</html>

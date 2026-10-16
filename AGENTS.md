@@ -27,3 +27,5 @@ Konnect follows the same rules as KuartalOS (`kuartal-id/kuartalos/AGENTS.md`). 
 - Never call `bootstrapCrossSigning` on an account that already has secret storage before the recovery key is unlocked. See `unlockWithRecoveryKey`.
 - The CRM stays encrypted in the browser. Changing its format means a new event type (`…crm.v2`) plus a migration, not an in-place change.
 - Anything that sends, deletes or leaves on someone's behalf needs a visible user action.
+- Discovery: never store or log a plain phone number on the server; only the HMAC and masked form. "Not found" and "switched off" must look identical. Keep lookups rate-limited.
+- `server/docker-compose.yml` is generated. Edit `server/compose.template.yml`, `server/setup.py`, `server/modules/` or `server/templates/`, then run `python3 server/build_compose.py`.

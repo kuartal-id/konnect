@@ -2,6 +2,22 @@
 
 Newest first. Every AI adds an entry before finishing.
 
+## 2026-10-16 (evening) — Claude — `claude/2-discovery`
+
+**Did:** Diemas asked to find people by @handle or phone number, with each person choosing how they're found, and to run the server on the VPS that already hosts Kuartal AI. He delegated the remaining decisions:
+- `SERVER_NAME=kuartal.id`, server at `matrix.kuartalsystems.com`, Kuartal ID public client `14d2db71-…0023` (kuartal-login PR registers it by migration). All of these are defaults, so the compose file needs no values.
+- `server/modules/konnect_discovery.py` (Synapse module): user-directory filter for "Show me in search"; one verified phone per person (WhatsApp Cloud API authentication template, or a test-only log verifier); HMAC-peppered storage plus masked display; lookup with rate limits; recycled numbers move to the latest verifier.
+- `server/setup.py`: secrets created once in `/data/konnect-secrets.json`, `homeserver.yaml` regenerated every start, `SERVER_NAME` locked after first use, WhatsApp switched on by env vars.
+- Branded Synapse templates (`server/templates/`) for the first-sign-in handle picker; no Matrix logos or external images.
+- `server/build_compose.py` embeds setup, module and templates into the one-file `server/docker-compose.yml`; CI checks it's current.
+- App: New chat finds people by name, exact @handle (even if hidden from search) or phone; Settings → "How people find you"; short `@handle` display; profile name loads correctly.
+
+**Tested:** Module API test (26 checks: auth, CORS, search hiding, exact handle, phone formats, wrong/expired codes, hashed storage, lookup on/off, rate limits, recycled number, remove). WhatsApp request format against a fake Graph endpoint. Kuartal ID → Synapse → Konnect sign-in end to end against a local Kuartal ID (PHP 8.4) with the production OIDC settings, including the branded handle page and returning-user sign-in. Browser test with two people (verify phone, hide from search, find by handle and by phone, phone lookup off). Full M1 regression (13/13). `docker compose config` on the generated file. Setup script run locally: config validated by Synapse's own loader, secrets 0600, SERVER_NAME lock.
+
+**Not done / known issues:** Not run on the real VPS (no Docker daemon here). WhatsApp codes untested against real Meta (needs his WhatsApp Business setup). Lookup rate limits are in memory. OIDC back-channel logout not enabled (Kuartal ID ID tokens have no `sid`, which Synapse needs).
+
+**Next AI should:** After Diemas deploys, check `https://matrix.kuartalsystems.com`, sign in via Kuartal ID on konnect.kuartalsystems.com, then flip the KuartalOS manifest to `beta`.
+
 ## 2026-10-16 — Claude — `claude/1-web-app-mvp`
 
 **Did:** Built the Konnect web app from an empty repo: React + Vite + TypeScript on `matrix-js-sdk` 44 with Rust crypto. Sign-in with password or Kuartal ID (OIDC via Synapse SSO, including the KuartalOS new-tab flow). Chat list with invites, DMs, encrypted groups, workspaces (Matrix spaces), timeline with load-earlier, typing, read receipts, composer. Recovery key setup and new-device restore. Personal CRM encrypted in the browser (AES-GCM, key in secret storage, cached non-extractable per device) with a contact panel and Contacts view. Network badges for bridged rooms. KuartalOS SDK bridge (title, notify) and `.htaccess` with `frame-ancestors`. `server/docker-compose.yml` for a Hostinger VPS that generates its own secrets. Docs, CI, deploy-to-`deploy`-branch workflow.

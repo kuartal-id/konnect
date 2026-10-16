@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import type { MatrixClient, Room } from "matrix-js-sdk";
 import { Avatar, Icon } from "./Avatar";
 import { createGroup, createWorkspace, normalizeUserId, openDirectChat } from "../lib/rooms";
+import { discovery, looksLikePhone, shortHandle, type DiscoverySettings } from "../lib/discovery";
 import { setUpRecovery, type SecurityState } from "../lib/matrix";
 import { errorText } from "../App";
 
@@ -74,58 +75,113 @@ export function NewChatDialog({ client, workspaces, currentWorkspace, initial = 
   );
 }
 
+interface Person {
+  user_id: string;
+  display_name?: string | null;
+  via?: "search" | "handle" | "phone";
+}
+
 function PersonPicker({ client, busy, onPick }: { client: MatrixClient; busy: boolean; onPick: (userId: string) => void }) {
   const [term, setTerm] = useState("");
-  const [results, setResults] = useState<{ user_id: string; display_name?: string }[]>([]);
+  const [results, setResults] = useState<Person[]>([]);
+  const [exact, setExact] = useState<Person | "none" | null>(null);
+  const [phoneState, setPhoneState] = useState<"idle" | "looking" | Person | { error: string }>("idle");
   const me = client.getUserId();
+  const domain = client.getDomain();
+  const isPhone = looksLikePhone(term);
+  const typed = isPhone ? null : normalizeUserId(term, domain);
 
+  // Search by name or @handle (people who switched search off are left out by the server).
   useEffect(() => {
-    const q = term.trim();
-    if (q.length < 2) {
+    const q = term.trim().replace(/^@/, "");
+    setPhoneState("idle");
+    if (q.length < 2 || isPhone) {
       setResults([]);
       return;
     }
     const t = window.setTimeout(async () => {
       try {
         const res = await client.searchUserDirectory({ term: q, limit: 8 });
-        setResults(res.results.filter((r) => r.user_id !== me));
+        setResults(res.results.filter((r) => r.user_id !== me).map((r) => ({ ...r, via: "search" as const })));
       } catch {
         setResults([]);
       }
     }, 250);
     return () => window.clearTimeout(t);
-  }, [client, term, me]);
+  }, [client, term, me, isPhone]);
 
-  const typed = normalizeUserId(term, client.getDomain());
+  // An exact @handle always works, even for people hidden from search.
+  useEffect(() => {
+    setExact(null);
+    if (!typed || typed === me || !term.trim().startsWith("@")) return;
+    const t = window.setTimeout(async () => {
+      try {
+        const profile = await client.getProfileInfo(typed);
+        setExact({ user_id: typed, display_name: profile.displayname ?? null, via: "handle" });
+      } catch {
+        setExact("none");
+      }
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [client, typed, term, me]);
+
+  async function findByPhone() {
+    setPhoneState("looking");
+    try {
+      const found = await discovery.lookupPhone(client, term);
+      setPhoneState({ ...found, via: "phone" });
+    } catch (e) {
+      setPhoneState({ error: (e as Error).message });
+    }
+  }
+
+  const list: Person[] = [];
+  if (exact && exact !== "none") list.push(exact);
+  for (const r of results) if (!list.some((p) => p.user_id === r.user_id)) list.push(r);
+  if (typeof phoneState === "object" && "user_id" in phoneState) list.push(phoneState);
+
   return (
     <form
       className="stack"
       onSubmit={(e) => {
         e.preventDefault();
-        if (typed) onPick(typed);
+        if (isPhone) void findByPhone();
+        else if (list[0]) onPick(list[0].user_id);
+        else if (typed) onPick(typed);
       }}
     >
       <label>
-        Name or Konnect ID
-        <input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="e.g. diemas or @diemas:kuartalsystems.com" />
+        Handle, name or phone number
+        <input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="@handle, a name, or +62 812…" autoComplete="off" />
       </label>
+
+      {isPhone && phoneState === "idle" && (
+        <button type="submit" className="btn">
+          Find who has this number
+        </button>
+      )}
+      {phoneState === "looking" && <p className="muted small">Looking…</p>}
+      {typeof phoneState === "object" && "error" in phoneState && <p className="muted small">{phoneState.error}</p>}
+      {exact === "none" && !results.length && <p className="muted small">No one has the handle {shortHandle(typed ?? "", domain)}.</p>}
+
       <ul className="pick-list">
-        {results.map((r) => (
+        {list.map((r) => (
           <li key={r.user_id}>
             <button type="button" className="contact-row" disabled={busy} onClick={() => onPick(r.user_id)}>
-              <Avatar id={r.user_id} name={r.display_name ?? r.user_id} size={32} />
+              <Avatar id={r.user_id} name={r.display_name || r.user_id} size={32} />
               <span className="contact-main">
-                <span className="contact-name">{r.display_name ?? r.user_id}</span>
-                <span className="muted small mono">{r.user_id}</span>
+                <span className="contact-name">{r.display_name || shortHandle(r.user_id, domain)}</span>
+                <span className="muted small">
+                  {shortHandle(r.user_id, domain)}
+                  {r.via === "phone" ? " · found by phone number" : ""}
+                </span>
               </span>
+              <span className="muted small">{busy ? "Starting…" : "Message"}</span>
             </button>
           </li>
         ))}
       </ul>
-      <button className="btn primary" disabled={!typed || busy}>
-        {busy ? "Starting…" : typed ? `Message ${typed}` : "Message"}
-      </button>
-      <p className="muted small">New direct messages are end-to-end encrypted.</p>
+      <p className="muted small">New direct messages are end-to-end encrypted. People choose in their settings whether they can be found in search or by phone number.</p>
     </form>
   );
 }
@@ -158,7 +214,7 @@ function GroupForm({ client, workspaces, currentWorkspace, busy, onSubmit }: {
       </label>
       <label>
         Invite people
-        <input value={people} onChange={(e) => setPeople(e.target.value)} placeholder="Konnect IDs, separated by commas" />
+        <input value={people} onChange={(e) => setPeople(e.target.value)} placeholder="@handles, separated by commas" />
       </label>
       {workspaces.length > 0 && (
         <label>
@@ -213,7 +269,7 @@ export function InviteDialog({ client, room, onClose }: { client: MatrixClient; 
     setBusy(true);
     try {
       await client.invite(room.roomId, userId);
-      setMsg(`Invited ${userId}.`);
+      setMsg(`Invited ${shortHandle(userId, client.getDomain())}.`);
       setValue("");
     } catch (err) {
       setMsg(errorText(err));
@@ -224,8 +280,8 @@ export function InviteDialog({ client, room, onClose }: { client: MatrixClient; 
     <Modal title={`Invite to ${room.name}`} onClose={onClose}>
       <form className="stack" onSubmit={submit}>
         <label>
-          Konnect ID
-          <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="@name:kuartalsystems.com" />
+          Handle
+          <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="@handle" />
         </label>
         {msg && <p className="muted small">{msg}</p>}
         <button className="btn primary" disabled={!userId || busy}>
@@ -348,6 +404,156 @@ export function SetupRecoveryDialog({ client, onDone, onClose }: { client: Matri
   );
 }
 
+/** "How people find you": search visibility and a verified phone number. */
+function FindMeSettings({ client }: { client: MatrixClient }) {
+  const [settings, setSettings] = useState<DiscoverySettings | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [sent, setSent] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [findable, setFindable] = useState(true);
+  const handle = shortHandle(client.getSafeUserId(), client.getDomain());
+
+  useEffect(() => {
+    discovery.settings(client).then(setSettings, (e: Error) => setError(e.message));
+  }, [client]);
+
+  async function run(fn: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    setBusy(false);
+  }
+
+  const reload = async () => setSettings(await discovery.settings(client));
+
+  return (
+    <section aria-labelledby="find-me">
+      <h3 id="find-me">How people find you</h3>
+      {!settings ? (
+        <p className="muted small">{error || "Loading…"}</p>
+      ) : (
+        <>
+          <label className="switch-row">
+            <span>
+              <strong>Show me in search</strong>
+              <span className="muted small">
+                {settings.handle_search
+                  ? `Anyone on Konnect can find you by your name or ${handle}.`
+                  : `You're hidden from search. Only people who type your exact handle, ${handle}, can message you.`}
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={settings.handle_search}
+              disabled={busy}
+              onChange={(e) => {
+                const on = e.target.checked;
+                void run(async () => {
+                  await discovery.update(client, { handle_search: on });
+                  await reload();
+                });
+              }}
+            />
+          </label>
+
+          <div className="phone-box">
+            <strong>Phone number</strong>
+            {settings.phone ? (
+              <>
+                <p className="small">
+                  {settings.phone.masked} <span className="ok-text inline">· verified</span>
+                </p>
+                <label className="switch-row">
+                  <span>
+                    <span>Let people who have my number find me</span>
+                    <span className="muted small">They have to know your number already. Konnect never shows it to anyone.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={settings.phone.lookup}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      void run(async () => {
+                        await discovery.update(client, { phone_lookup: on });
+                        await reload();
+                      });
+                    }}
+                  />
+                </label>
+                <button
+                  className="btn small"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      await discovery.removePhone(client);
+                      await reload();
+                    })
+                  }
+                >
+                  Remove number
+                </button>
+              </>
+            ) : !settings.phone_verification ? (
+              <p className="muted small">
+                Finding people by phone number needs WhatsApp verification codes, which aren't switched on for this server yet.
+              </p>
+            ) : sent ? (
+              <form
+                className="stack"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(async () => {
+                    await discovery.confirmPhone(client, code, findable);
+                    setSent(null);
+                    setCode("");
+                    setPhone("");
+                    await reload();
+                  });
+                }}
+              >
+                <p className="small">We sent a 6-digit code to {sent} on WhatsApp.</p>
+                <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" aria-label="Verification code" />
+                <label className="check">
+                  <input type="checkbox" checked={findable} onChange={(e) => setFindable(e.target.checked)} /> Let people who have my number find me
+                </label>
+                <div className="row">
+                  <button className="btn primary" disabled={busy || code.length !== 6}>Verify</button>
+                  <button type="button" className="btn" onClick={() => setSent(null)}>Use a different number</button>
+                </div>
+              </form>
+            ) : (
+              <form
+                className="row wrap"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(async () => {
+                    const res = await discovery.startPhone(client, phone);
+                    setSent(res.masked);
+                  });
+                }}
+              >
+                <input value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" autoComplete="tel" placeholder="+62 812 3456 7890" aria-label="Phone number" className="grow" />
+                <button className="btn" disabled={busy || !looksLikePhone(phone)}>Send code</button>
+              </form>
+            )}
+            <p className="muted small">Konnect keeps only a scrambled fingerprint of your number, so it can't be read back or listed.</p>
+          </div>
+          {error && <p className="alert small">{error}</p>}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function SettingsDialog({ client, security, onSecurity, onSignOut, onClose }: {
   client: MatrixClient;
   security: SecurityState | null;
@@ -356,7 +562,15 @@ export function SettingsDialog({ client, security, onSecurity, onSignOut, onClos
   onClose: () => void;
 }) {
   const userId = client.getSafeUserId();
-  const [name, setName] = useState(client.getUser(userId)?.displayName ?? "");
+  const cached = client.getUser(userId)?.displayName;
+  const [name, setName] = useState(cached && cached !== userId ? cached : "");
+
+  useEffect(() => {
+    client.getProfileInfo(userId).then(
+      (p) => setName((current) => current || p.displayname || ""),
+      () => undefined,
+    );
+  }, [client, userId]);
   const [savedName, setSavedName] = useState(false);
   const [confirmOut, setConfirmOut] = useState(false);
   const [outState, setOutState] = useState<"idle" | "saving" | "pending">("idle");
@@ -373,18 +587,23 @@ export function SettingsDialog({ client, security, onSecurity, onSignOut, onClos
         <section>
           <h3>Profile</h3>
           <form
-            className="row"
+            className="row end"
             onSubmit={async (e) => {
               e.preventDefault();
               await client.setDisplayName(name.trim()).catch(() => undefined);
               setSavedName(true);
             }}
           >
-            <input value={name} onChange={(e) => { setName(e.target.value); setSavedName(false); }} aria-label="Display name" placeholder="Display name" />
+            <label className="grow">
+              Display name
+              <input value={name} onChange={(e) => { setName(e.target.value); setSavedName(false); }} placeholder="Your name" />
+            </label>
             <button className="btn">{savedName ? "Saved" : "Save"}</button>
           </form>
-          <p className="muted small mono">{userId}</p>
+          <p className="muted small">Your handle: <strong>{shortHandle(userId, client.getDomain())}</strong></p>
         </section>
+
+        <FindMeSettings client={client} />
 
         <section>
           <h3>Encryption</h3>

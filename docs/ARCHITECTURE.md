@@ -22,7 +22,7 @@ Konnect is Kuartal's messaging app: encrypted 1:1 and group chats, team workspac
 
 ## Accounts and sign-in
 
-- Kuartal ID is an OIDC provider. Synapse trusts it as `oidc-kuartal`. It is a public client with PKCE, so there's no client secret.
+- Kuartal ID is an OIDC provider. Synapse trusts it as `oidc-kuartal`, using the public client `14d2db71-041a-4841-aca5-3218ff8b0023` (PKCE, no secret), registered by a `kuartal-login` migration. Synapse reads name and email from `/oauth/userinfo` and links accounts by `sub`. It doesn't store the email.
 - Flow: Konnect → `matrix/_matrix/client/v3/login/sso/redirect/oidc-kuartal` → Kuartal ID login (including its 2FA) → Synapse → back to Konnect with a one-time `loginToken` → Konnect exchanges it for an access token.
 - Inside a KuartalOS window, sign-in opens in a new tab. Konnect and KuartalOS are the same site (`*.kuartalsystems.com`), so the session saved by that tab is picked up by the window through a `storage` event.
 - Password sign-in exists only for admin and test accounts. Open registration is off.
@@ -33,6 +33,22 @@ Konnect is Kuartal's messaging app: encrypted 1:1 and group chats, team workspac
 - **Recovery key** (`src/lib/matrix.ts`): the first time, Konnect creates the cross-signing identity, secret storage and an encrypted key backup, and shows a 48-character recovery key once. On a new device, the person enters it to trust that device and restore older messages.
 - Safety rule: Konnect asks for the recovery key **before** calling cross-signing setup on a device that already has an identity. A cancelled prompt can never create a new identity and lock the person out of their own history.
 - Message keys live in the browser's IndexedDB (Rust crypto store). Signing out deletes them, along with the session on the server.
+
+## Finding people (`server/modules/konnect_discovery.py`, `src/lib/discovery.ts`)
+
+Each person controls how they can be found (Settings → How people find you):
+
+| Way to find someone | Default | Control |
+| --- | --- | --- |
+| Search by name or @handle | On | "Show me in search". When off, the server's user-directory filter leaves them out of everyone else's results. |
+| Exact @handle | Always | Same as knowing an email address: whoever types the full handle can start a chat. |
+| Phone number | Off until verified | Add one number, prove it with a 6-digit WhatsApp code, then choose "Let people who have my number find me". |
+
+- **Handles** are the Matrix localpart, chosen once at first Kuartal ID sign-in on a branded Synapse page (`server/templates/`). IDs are `@handle:kuartal.id`; the app shows `@handle`.
+- **Phone privacy**: the server stores only `HMAC-SHA256(server pepper, E.164 number)` and a masked form. A database dump can't be turned back into numbers without the pepper, which is created on the server and kept in `/data/konnect-secrets.json`. "Not found" and "found but switched off" give the same answer. Lookups need sign-in and are rate-limited (30/hour, 100/day per person). Code requests are limited to 3/hour per person and per number.
+- **Recycled numbers**: whoever verifies a number most recently owns it; the previous owner loses it.
+- Numbers are normalized with `phonenumbers` (Synapse already depends on it). Indonesian local formats (`0812…`, `62812…`) work.
+- API: `GET/PUT settings`, `POST phone/start`, `POST phone/confirm`, `DELETE phone`, `POST lookup/phone` under `/_synapse/client/konnect/v1/`, with a Matrix access token.
 
 ## Personal CRM (`src/lib/crm.ts`)
 
@@ -73,4 +89,6 @@ Bridged messages are decrypted on our server to relay them, so they are **not en
 | `src/components/ChatView.tsx` | Timeline and composer |
 | `src/components/CrmPanel.tsx`, `ContactsView.tsx` | CRM screens |
 | `src/components/Dialogs.tsx` | New chat, invite, recovery, settings |
-| `server/docker-compose.yml` | Chat server for a Hostinger VPS |
+| `src/lib/discovery.ts` | Finding people by handle/phone, discovery settings |
+| `server/docker-compose.yml` | Chat server for the VPS, **generated** by `server/build_compose.py` from the template plus `setup.py`, `modules/` and `templates/` |
+| `server/modules/konnect_discovery.py` | Synapse module: search visibility, verified phones, lookup |

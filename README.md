@@ -2,8 +2,8 @@
 
 **Kuartal Konnect** is Kuartal's encrypted messaging app. It has direct messages, group chats and team workspaces, plus a private CRM for every person. It's built on the open Matrix protocol, signs in with Kuartal ID, and opens as an app inside KuartalOS.
 
-- Web app: `konnect.kuartalsystems.com` (planned)
-- Chat server: `matrix.kuartalsystems.com` (planned)
+- Web app: `konnect.kuartalsystems.com` (live)
+- Chat server: `matrix.kuartalsystems.com` (VPS, see docs/SERVER.md); Konnect IDs end in `kuartal.id`
 - Store listing name **Kuartal Konnect**; home-screen name **Konnect**
 
 ## What works today
@@ -14,6 +14,7 @@
 - Invites: accept or decline; invite people to groups
 - Recovery key: back up encryption, then restore history on a new device
 - **Personal CRM** next to every chat (stage, company, tags, notes, follow-up date), encrypted in the browser so the server can't read it, plus a Contacts view with follow-ups due
+- Find people by @handle, name or verified phone number, and choose how you can be found (search on/off, phone on/off)
 - Network badges for chats bridged from WhatsApp, Instagram, Telegram and others
 - KuartalOS: window title with unread count, new-message notifications
 - Light and dark theme, phone-width layout

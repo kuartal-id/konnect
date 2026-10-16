@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { Direction, EventStatus, EventType, KnownMembership, type MatrixClient, type MatrixEvent, type Room } from "matrix-js-sdk";
 import { Avatar, Icon } from "./Avatar";
 import { acceptInvite, directPartner, roomNetwork, summarize } from "../lib/rooms";
+import { shortHandle } from "../lib/discovery";
 
 interface Props {
   client: MatrixClient;
@@ -101,7 +102,7 @@ export function ChatView({ client, room, version, crmOpen, showBack, onBack, onT
               <span>Not encrypted</span>
             )}
             {summary.kind === "group" && <span>{memberCount === 1 ? "1 member" : `${memberCount} members`}</span>}
-            {partner && <span className="mono">{partner}</span>}
+            {partner && <span>{shortHandle(partner, client.getDomain())}</span>}
           </p>
         </div>
         <div className="head-actions">

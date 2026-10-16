@@ -4,74 +4,83 @@ Konnect has two parts:
 
 | Part | What it is | Where it runs |
 | --- | --- | --- |
-| **Web app** | The screens people use (this repo's `src/`). Static files. | Hostinger web hosting, like the other Kuartal sites: `konnect.kuartalsystems.com` |
-| **Chat server** | Stores encrypted messages, accounts, workspaces. [Synapse](https://github.com/element-hq/synapse), the reference Matrix server. | A **Hostinger VPS** with Docker: `matrix.kuartalsystems.com` |
+| **Web app** | The screens people use (`src/`). Static files. | Hostinger web hosting: `konnect.kuartalsystems.com` (live) |
+| **Chat server** | Encrypted messages, accounts, workspaces, discovery. [Synapse](https://github.com/element-hq/synapse) + PostgreSQL + Caddy. | The Kuartal VPS (shared with Kuartal AI): `matrix.kuartalsystems.com` |
 
-Regular Hostinger web hosting can't run the chat server, because the server has to stay running all the time. A VPS can.
+Decided settings (all defaults in `server/docker-compose.yml`, so nothing needs typing):
 
-## Decisions to make once
+| Setting | Value |
+| --- | --- |
+| Konnect ID ending (`SERVER_NAME`) | `kuartal.id`, so IDs are `@handle:kuartal.id` and the app shows `@handle`. **Permanent**: the server refuses to start if it is changed later. |
+| Chat server address (`MATRIX_HOST`) | `matrix.kuartalsystems.com` |
+| Web app (`KONNECT_URL`) | `https://konnect.kuartalsystems.com` |
+| Kuartal ID client | `14d2db71-041a-4841-aca5-3218ff8b0023`. Public client with PKCE (no secret), registered by `kuartal-id/kuartal-login` migration `2026_10_16_000100`. |
 
-1. **Konnect ID domain (`SERVER_NAME`).** It's the part after the colon in everyone's ID, like `@diemas:kuartal.id`. **It can never change** once accounts exist. Recommended: `kuartal.id`.
-2. **Chat server address (`MATRIX_HOST`).** Recommended: `matrix.kuartalsystems.com`. You can move this later.
+## Step 1: Register Konnect in Kuartal ID
 
-## Step 1 — Register Konnect in Kuartal ID
+Merge the `kuartal-login` PR "Register Konnect as a Kuartal ID app". Its deploy runs `migrate`, which creates the client. There's no terminal step and no secret.
 
-This is a one-time change on the Kuartal ID server. Per the Kuartal ID rule, apps are registered server-side, not through an admin page. Whoever maintains `kuartal-id/kuartal-login` creates a **public client with PKCE**, so there's no client secret to handle:
+## Step 2: DNS
 
-- Name: `Konnect`
-- Redirect URI: `https://matrix.kuartalsystems.com/_synapse/client/oidc/callback`
-- Scopes: `openid profile email`
-- Optional: a back-channel logout URI, later.
+hPanel → Domains → `kuartalsystems.com` → DNS records → add an **A record**: name `matrix`, pointing to the **VPS's IPv4 address** (hPanel → VPS → Overview).
 
-That gives a **client ID** (not secret) for Step 2. For example, Passport's `passport:client --public` produces it.
+## Step 3: Start the server on the VPS
 
-## Step 2 — Start the chat server on a Hostinger VPS
+**Option A: Docker Manager (no terminal).** hPanel → VPS → **Docker Manager** → Compose → *Deploy from URL*:
 
-1. Create a VPS in hPanel with the **Ubuntu + Docker** template. KVM 2 (2 vCPU, 8 GB RAM) is plenty to start.
-2. DNS (hPanel → Domains → kuartalsystems.com → DNS): add an **A record** `matrix` → the VPS IP address.
-3. hPanel → VPS → **Docker Manager** → **Compose** → create a project named `konnect`. Paste `server/docker-compose.yml`, or its raw GitHub URL.
-4. Fill in the **Environment** values. None of these are secrets:
-
-   | Name | Example |
-   | --- | --- |
-   | `MATRIX_HOST` | `matrix.kuartalsystems.com` |
-   | `SERVER_NAME` | `kuartal.id` |
-   | `KONNECT_URL` | `https://konnect.kuartalsystems.com` |
-   | `KUARTAL_ID_CLIENT_ID` | the client ID from Step 1 |
-
-5. **Deploy.** On first start the `setup` container writes the config and creates every password and key by itself, inside the server's private storage. Within about a minute `https://matrix.kuartalsystems.com` shows "Konnect server is running." HTTPS certificates are automatic.
-
-If the VPS template already runs another web proxy on ports 80/443 (Traefik, for example), remove the `caddy` service and point that proxy at `synapse:8008` for the paths `/_matrix` and `/_synapse/client`.
-
-## Step 3 — Publish the web app on Hostinger
-
-1. GitHub → `kuartal-id/konnect` → Settings → Secrets and variables → Actions → **Variables** → add `HOMESERVER_URL` = `https://matrix.kuartalsystems.com`.
-2. Merging to `main` builds the app and publishes it to the `deploy` branch, the same as KuartalOS.
-3. hPanel → Websites → add `konnect.kuartalsystems.com` → **Git** → repository `kuartal-id/konnect`, branch `deploy`, auto-deploy on.
-
-The `.htaccess` that ships with the build allows Konnect to open inside KuartalOS windows (`os.kuartalsystems.com`), and nowhere else.
-
-## Step 4 — Only if `SERVER_NAME` is a different domain from `MATRIX_HOST`
-
-Other Matrix apps (Element, for example) find the server through a small file on the `SERVER_NAME` domain. Konnect itself doesn't need this. To let people use other Matrix apps too, add this file to the `kuartal.id` site as `/.well-known/matrix/client`:
-
-```json
-{ "m.homeserver": { "base_url": "https://matrix.kuartalsystems.com" } }
+```
+https://raw.githubusercontent.com/kuartal-id/konnect/main/server/docker-compose.yml
 ```
 
-It must be served with the header `Access-Control-Allow-Origin: *`.
+Project name `konnect`. Leave the environment empty. Deploy.
+
+**Option B: if the Docker Manager isn't offered for this VPS.** hPanel → VPS → **Browser terminal**, paste this one line and press Enter:
+
+```sh
+mkdir -p /opt/konnect && cd /opt/konnect && curl -fsSL https://raw.githubusercontent.com/kuartal-id/konnect/main/server/docker-compose.yml -o docker-compose.yml && docker compose up -d
+```
+
+On first start, the `setup` container creates every password and key inside the server's private storage. Nobody sees or copies a secret. After a minute or two, `https://matrix.kuartalsystems.com` shows **"Konnect server is running."** The HTTPS certificate is automatic once DNS points at the VPS.
+
+If hPanel → VPS → Security → **Firewall** has rules, allow TCP **80** and **443**. Ubuntu's own firewall (UFW) doesn't need changes, because Docker opens published ports itself.
+
+## Sharing the VPS with Kuartal AI
+
+- Konnect uses only ports **80/443** and its own private Docker networks. It doesn't touch the Kuartal AI gateway (LiteLLM on `127.0.0.1:4000`), its database, or the `kuartal-ai-gateway_private` network.
+- **Ports 80/443 now belong to Konnect's Caddy.** The KuartalOS plan for `api.os.kuartalsystems.com` (in `kuartal-id/kuartalos`, `infra/kuartal-api`) says to install Caddy on the host. That would clash. When that API is approved to go public, add its site to Konnect's Caddy instead, as one more block in `server/compose.template.yml`, proxying to the API container over a shared Docker network.
+- Sizing: Synapse + PostgreSQL for a small team uses about 1 GB RAM. Kuartal AI's gateway is light, so both fit on a KVM 2 or larger.
+
+## Updating
+
+Merging to `main` doesn't touch the VPS. To update: Docker Manager → `konnect` → **Redeploy** (it fetches the file again). For Option B, paste the same one line again. Settings and secrets are kept, and the config is regenerated from the latest file.
+
+## Phone-number discovery (WhatsApp codes)
+
+People can be found by a phone number only after they prove it's theirs with a 6-digit code. Codes go out over **WhatsApp Cloud API** (Meta). Until it's set up, the app says phone verification isn't switched on, and handles still work fully.
+
+1. Meta Business Suite → **WhatsApp** → set up a business phone number. This is the same number the future Konnect WhatsApp inbox will use.
+2. WhatsApp Manager → Message templates → create **`konnect_code`**: category **Authentication**, language English (or Indonesian), with the **Copy code** button.
+3. Business Settings → System users → create one, give it the WhatsApp app, and **generate a permanent token** with `whatsapp_business_messaging`.
+4. Docker Manager → `konnect` → Environment → add:
+   - `WHATSAPP_TOKEN` = the token. This is a secret: it lives only here, never in GitHub or chat.
+   - `WHATSAPP_PHONE_NUMBER_ID` = the *Phone number ID* (a number, not the phone number)
+   - `WHATSAPP_LANGUAGE` = `id` if the template is in Indonesian (default `en`)
+5. Redeploy.
+
+Meta charges per authentication message, a few hundred rupiah each in Indonesia. Each person can request at most 3 codes an hour.
 
 ## What's switched on
 
-- Accounts come only from **Kuartal ID**. On first sign-in, people confirm the Konnect ID suggested from their email. Open sign-up is off.
-- **Every new chat is end-to-end encrypted**, including chats made from other Matrix apps.
-- **Closed network**: no federation with other Matrix servers yet. To allow it later, remove `federation_domain_whitelist` from the config and add the federation listener.
-- The admin API is not exposed to the internet.
+- Accounts come only from **Kuartal ID** (including its 2FA). On first sign-in, people choose their **@handle** on a Konnect-branded page; it can't change later. Open sign-up is off.
+- **Discovery** (`server/modules/konnect_discovery.py`): search by name/@handle unless someone turns "Show me in search" off. Exact @handles always work. Verified phone numbers are stored only as a keyed hash plus a masked form (`+62 ••• 6789`). Lookups are rate-limited (30/hour, 100/day per person).
+- **Every new chat is end-to-end encrypted**, also when made from other Matrix apps.
+- **Closed network**: no federation with other Matrix servers.
+- The admin API isn't exposed to the internet.
 
 ## Backups
 
-Everything lives in three Docker volumes: `konnect_synapse-data` (config, keys, uploads), `konnect_db-data` (database) and `konnect_db-secret`. Turn on Hostinger's **VPS snapshots/backups** in hPanel. Message contents are end-to-end encrypted, so a backup of the server can't be read without people's own keys.
+Everything lives in the Docker volumes `konnect_synapse-data` (config, keys, uploads), `konnect_db-data` (database) and `konnect_db-secret`. Turn on Hostinger **VPS backups/snapshots**. Message contents are end-to-end encrypted, so a server backup can't be read without people's own keys.
 
-## Later: WhatsApp and Instagram
+## Later: WhatsApp and Instagram inboxes
 
 See `docs/ARCHITECTURE.md` → "Connected apps". These are extra containers in the same Docker project, plus Meta business approval.
