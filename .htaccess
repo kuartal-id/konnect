@@ -1,0 +1,30 @@
+# Konnect on Hostinger (Apache/LiteSpeed). Copied into the build, so it ships with every deploy.
+
+# The encryption engine is a WebAssembly file; browsers need the right type to load it fast.
+AddType application/wasm .wasm
+AddType application/manifest+json .webmanifest
+
+<IfModule mod_headers.c>
+  # Allow Konnect to open inside KuartalOS windows, and nowhere else.
+  Header always set Content-Security-Policy "frame-ancestors 'self' https://os.kuartalsystems.com https://os.kuartal.id"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(), geolocation=(), microphone=()"
+  # Never cache the page itself, so a deploy reaches everyone right away. Hashed assets can be cached forever.
+  <FilesMatch "index\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "\.(js|css|wasm)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
+
+# Single-page app: send unknown paths to index.html.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTPS} off
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^ index.html [L]
+</IfModule>
