@@ -4,6 +4,7 @@ import { Avatar, Icon } from "./Avatar";
 import { createGroup, createWorkspace, normalizeUserId, openDirectChat } from "../lib/rooms";
 import { discovery, looksLikePhone, shortHandle, type DiscoverySettings } from "../lib/discovery";
 import { setUpRecovery, type SecurityState } from "../lib/matrix";
+import { getNotifyPref, notificationsSupported, setNotifyPref, type NotifyPref } from "../lib/notify";
 import { errorText } from "../App";
 
 export function Modal({ title, onClose, children, wide = false }: { title: string; onClose?: () => void; children: ReactNode; wide?: boolean }) {
@@ -405,7 +406,7 @@ export function SetupRecoveryDialog({ client, onDone, onClose }: { client: Matri
 }
 
 /** "How people find you": search visibility and a verified phone number. */
-function FindMeSettings({ client }: { client: MatrixClient }) {
+export function FindMeSettings({ client }: { client: MatrixClient }) {
   const [settings, setSettings] = useState<DiscoverySettings | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -554,10 +555,142 @@ function FindMeSettings({ client }: { client: MatrixClient }) {
   );
 }
 
-export function SettingsDialog({ client, security, onSecurity, onSignOut, onClose }: {
+function NotificationSettings() {
+  const [pref, setPref] = useState<NotifyPref>(getNotifyPref());
+  const [denied, setDenied] = useState(false);
+  if (!notificationsSupported()) return null;
+  return (
+    <section>
+      <h3>Notifications on this device</h3>
+      <div className="tabs" role="radiogroup" aria-label="Notifications">
+        {(
+          [
+            ["off", "Off"],
+            ["full", "Show messages"],
+            ["private", "Hide message text"],
+          ] as [NotifyPref, string][]
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            role="radio"
+            aria-checked={pref === value}
+            className={`tab ${pref === value ? "on" : ""}`}
+            onClick={async () => {
+              const result = await setNotifyPref(value);
+              setPref(result);
+              setDenied(value !== "off" && result === "off");
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="muted small">
+        {denied
+          ? "Your browser blocked notifications for Konnect. Allow them in the browser's site settings, then try again."
+          : "Works while Konnect is open, including in a background tab or as an installed app."}
+      </p>
+    </section>
+  );
+}
+
+function DevicesSection({ client }: { client: MatrixClient }) {
+  const [devices, setDevices] = useState<{ id: string; name: string; lastSeen?: number; verified: boolean }[] | null>(null);
+  const me = client.getSafeUserId();
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const { devices: list } = await client.getDevices();
+        const crypto = client.getCrypto();
+        const rows = await Promise.all(
+          list.map(async (d) => ({
+            id: d.device_id,
+            name: d.display_name || d.device_id,
+            lastSeen: d.last_seen_ts,
+            verified: Boolean((await crypto?.getDeviceVerificationStatus(me, d.device_id))?.crossSigningVerified),
+          })),
+        );
+        rows.sort((a, b) => Number(b.id === client.getDeviceId()) - Number(a.id === client.getDeviceId()) || (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
+        if (live) setDevices(rows);
+      } catch {
+        if (live) setDevices([]);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [client, me]);
+
+  return (
+    <section>
+      <h3>Your devices</h3>
+      {!devices ? (
+        <p className="muted small">Loading…</p>
+      ) : (
+        <ul className="member-list">
+          {devices.map((d) => (
+            <li key={d.id} className="member-row">
+              <span className="contact-main">
+                <span className="contact-name">
+                  {d.name}
+                  {d.id === client.getDeviceId() && <span className="muted small"> · this device</span>}
+                </span>
+                <span className="muted small">
+                  {d.lastSeen ? `Last active ${new Date(d.lastSeen).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}` : d.id}
+                </span>
+              </span>
+              {d.verified ? (
+                <span className="verified" title="Verified">
+                  <Icon name="shield" size={14} />
+                </span>
+              ) : (
+                <span className="warn-text small">Not verified</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">Don't recognise a device? Sign out of Kuartal ID everywhere and change your password, then verify your devices again.</p>
+    </section>
+  );
+}
+
+function BlockedSection({ client }: { client: MatrixClient }) {
+  const [blocked, setBlocked] = useState(client.getIgnoredUsers());
+  if (!blocked.length) return null;
+  return (
+    <section>
+      <h3>Blocked people</h3>
+      <ul className="member-list">
+        {blocked.map((id) => (
+          <li key={id} className="member-row">
+            <span className="contact-main">
+              <span className="contact-name">{shortHandle(id, client.getDomain())}</span>
+            </span>
+            <button
+              className="btn small"
+              onClick={async () => {
+                const next = client.getIgnoredUsers().filter((u) => u !== id);
+                await client.setIgnoredUsers(next).catch(() => undefined);
+                setBlocked(next);
+              }}
+            >
+              Unblock
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+export function SettingsDialog({ client, security, embedded, onSecurity, onVerifyDevice, onSignOut, onClose }: {
   client: MatrixClient;
   security: SecurityState | null;
+  embedded: boolean;
   onSecurity: () => void;
+  onVerifyDevice: () => void;
   onSignOut: (force: boolean) => Promise<"done" | "pending">;
   onClose: () => void;
 }) {
@@ -616,8 +749,11 @@ export function SettingsDialog({ client, security, onSecurity, onSignOut, onClos
             </>
           ) : !security.deviceTrusted ? (
             <>
-              <p className="small">This device isn't verified yet. Enter your recovery key to read older messages here.</p>
-              <button className="btn primary" onClick={onSecurity}>Verify this device</button>
+              <p className="small">This device isn't verified yet. Verify it to read older messages here.</p>
+              <div className="row wrap">
+                <button className="btn primary" onClick={onSecurity}>Use recovery key</button>
+                <button className="btn" onClick={onVerifyDevice}>Verify with another device</button>
+              </div>
             </>
           ) : (
             <p className="small ok-text">
@@ -626,6 +762,12 @@ export function SettingsDialog({ client, security, onSecurity, onSignOut, onClos
           )}
           <p className="muted small mono">Device {client.getDeviceId()}</p>
         </section>
+
+        <DevicesSection client={client} />
+
+        {!embedded && <NotificationSettings />}
+
+        <BlockedSection client={client} />
 
         <section>
           <h3>Connected apps</h3>

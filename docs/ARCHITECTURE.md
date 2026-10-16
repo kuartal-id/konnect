@@ -50,6 +50,23 @@ Each person controls how they can be found (Settings → How people find you):
 - Numbers are normalized with `phonenumbers` (Synapse already depends on it). Indonesian local formats (`0812…`, `62812…`) work.
 - API: `GET/PUT settings`, `POST phone/start`, `POST phone/confirm`, `DELETE phone`, `POST lookup/phone` under `/_synapse/client/konnect/v1/`, with a Matrix access token.
 
+## Files and photos (`src/lib/attachments.ts`)
+
+- In encrypted chats each file is encrypted in the browser with a fresh AES-256-CTR key (Matrix "encrypted attachments" v2: key as JWK, IV, SHA-256 of the ciphertext). The key travels inside the end-to-end encrypted message, so the server only stores ciphertext and doesn't see file names or types.
+- Downloads use authenticated media (`/_matrix/client/v1/media/download` with the access token). The hash is checked before decrypting.
+- Only PNG, JPEG, GIF and WebP are shown inline. Everything else is a download with a forced `application/octet-stream` type, so a malicious file can't run in the page.
+- Limit 50 MB (`max_upload_size` on the server).
+
+## Verification (`src/components/Verification.tsx`, `src/lib/trust.ts`)
+
+- Emoji (SAS) verification through the Rust crypto engine, either with a contact (request sent in the DM) or between your own devices (`requestOwnUserVerification`).
+- Trust shown in the UI: a green shield for verified people. If a verified person's identity changes, a banner says so, with **Verify** or **I understand** (`withdrawVerificationRequirement` / `pinCurrentUserIdentity`).
+- Verifying a new device from an old one shares the cross-signing keys and key backup secret. The **CRM key still needs the recovery key** on each new device, because it lives only in secret storage.
+
+## Message actions (`src/lib/messages.ts`)
+
+Replies (`m.in_reply_to`, no quoted fallback; old fallbacks from other apps are stripped when shown), edits (`m.replace`, own text messages), delete (redaction, own messages, with confirmation), reactions (`m.annotation`, six quick choices). Blocking uses Matrix ignored users, so the server stops delivering their messages and invites.
+
 ## Personal CRM (`src/lib/crm.ts`)
 
 - One document per person: contacts keyed by Matrix user ID (works for bridged WhatsApp/Instagram people too) or room ID for groups. Each contact has stage, company, tags, notes and a follow-up date.

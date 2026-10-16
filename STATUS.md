@@ -1,17 +1,23 @@
 # Konnect — Status
 
-_Last updated: 2026-10-17 by Claude. Every AI updates this file before finishing (see AGENTS.md)._
+_Last updated: 2026-10-17 (night) by Claude. Every AI updates this file before finishing (see AGENTS.md)._
 
 ## Current stage
 
-**Live.** Web app at `konnect.kuartalsystems.com`; chat server at `matrix.kuartalsystems.com` on the Kuartal VPS since 2026-10-17, behind the VPS's existing host Caddy (docs/SERVER.md). Sign in with Kuartal ID, @handles, discovery and encryption are on. Phone discovery waits for WhatsApp Cloud API details.
+**Live.** Web app at `konnect.kuartalsystems.com`, chat server at `matrix.kuartalsystems.com` on the Kuartal VPS behind host Caddy (docs/SERVER.md). Diemas signed in with Kuartal ID on 2026-10-17.
+
+**M2 (everyday features) in PR #4:** encrypted files and photos; reply, edit, delete, reactions; emoji verification with contacts and between own devices, plus identity-change warnings; chat info (members, rename, leave, block); browser notifications; first-run setup; installable app (manifest and icons).
 
 ## Waiting on Diemas
 
-1. First real sign-in and choosing his handle.
+1. "go" on PR #3 (docs) and PR #4 (everyday features).
 2. Optional: WhatsApp Cloud API number, `konnect_code` template and token for phone verification (docs/SERVER.md).
 
 ## Next up
+
+- Push notifications when Konnect is closed: needs a push gateway (Sygnal) on the VPS, a service worker, and VAPID keys made on the server.
+- Sign out other devices from Settings: needs the Kuartal ID re-authentication step (SSO fallback page) that the server asks for.
+- Voice/video calls (Element Call / LiveKit on the VPS).
 
 - After the server is live: switch the KuartalOS manifest (`kuartal-id/kuartalos` `registry/apps/konnect.json`) from `planned` to `beta`.
 
