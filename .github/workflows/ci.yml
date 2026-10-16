@@ -17,3 +17,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      - name: Server file is up to date
+        run: python3 server/build_compose.py --check
+      - name: Server scripts compile
+        run: python3 -m py_compile server/setup.py server/modules/konnect_discovery.py server/build_compose.py

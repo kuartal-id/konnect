@@ -1,0 +1,153 @@
+# Konnect chat server: Synapse (Matrix) + PostgreSQL + Caddy (automatic HTTPS).
+#
+# GENERATED FILE. Edit server/compose.template.yml, setup.py, modules/ or templates/ and run
+# `python3 server/build_compose.py`. CI fails if this file is out of date.
+#
+# One self-contained file for a Hostinger VPS with Docker. Nothing to fill in: every setting has the
+# Kuartal default below, and every password/key is created on the server the first time it starts.
+# Full guide: docs/SERVER.md.
+#
+# Optional settings (Docker Manager → Environment, or a .env file next to this one):
+#   MATRIX_HOST               default matrix.kuartalsystems.com (DNS A record → this VPS)
+#   SERVER_NAME               default kuartal.id: the end of every Konnect ID. PERMANENT once used.
+#   KONNECT_URL               default https://konnect.kuartalsystems.com
+#   KUARTAL_ID_CLIENT_ID      default: Konnect's registered public client in Kuartal ID
+#   WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TEMPLATE, WHATSAPP_LANGUAGE
+#                             turn on phone-number verification codes over WhatsApp (docs/SERVER.md)
+#
+# Shares the VPS with Kuartal AI: this stack only uses ports 80/443 and its own private network.
+# Needs Docker Compose 2.23 or newer.
+
+name: konnect
+
+services:
+  setup:
+    image: matrixdotorg/synapse:v1.163.0
+    restart: "no"
+    entrypoint: ["python", "/konnect/setup.py"]
+    environment:
+      MATRIX_HOST: ${MATRIX_HOST:-matrix.kuartalsystems.com}
+      SERVER_NAME: ${SERVER_NAME:-kuartal.id}
+      KONNECT_URL: ${KONNECT_URL:-https://konnect.kuartalsystems.com}
+      KUARTAL_ID_CLIENT_ID: ${KUARTAL_ID_CLIENT_ID:-14d2db71-041a-4841-aca5-3218ff8b0023}
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_TEMPLATE: ${WHATSAPP_TEMPLATE:-konnect_code}
+      WHATSAPP_LANGUAGE: ${WHATSAPP_LANGUAGE:-en}
+    configs:
+      - source: konnect-setup
+        target: /konnect/setup.py
+    volumes:
+      - synapse-data:/data
+      - db-secret:/secrets
+    networks: [internal]
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_DB: synapse
+      POSTGRES_PASSWORD_FILE: /secrets/db_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-secret:/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  synapse:
+    image: matrixdotorg/synapse:v1.163.0
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      PYTHONPATH: /konnect/modules
+    configs:
+      - source: konnect-discovery
+        target: /konnect/modules/konnect_discovery.py
+      - source: konnect-template-base
+        target: /konnect/templates/_base.html
+      - source: konnect-template-footer
+        target: /konnect/templates/sso_footer.html
+      - source: konnect-template-handle
+        target: /konnect/templates/sso_auth_account_details.html
+    volumes:
+      - synapse-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8008/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [internal, web]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      synapse:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [web]
+
+networks:
+  internal:
+    internal: true
+  web: {}
+
+volumes:
+  synapse-data: {}
+  db-data: {}
+  db-secret: {}
+  caddy-data: {}
+  caddy-config: {}
+
+configs:
+  caddyfile:
+    content: |
+      ${MATRIX_HOST:-matrix.kuartalsystems.com} {
+        encode zstd gzip
+        # Chat API, Kuartal ID sign-in pages and Konnect discovery. The admin API stays private.
+        reverse_proxy /_matrix/* synapse:8008
+        reverse_proxy /_synapse/client/* synapse:8008
+        respond / "Konnect server is running." 200
+      }
+
+  konnect-setup:
+    content: |
+@@FILE server/setup.py@@
+
+  konnect-discovery:
+    content: |
+@@FILE server/modules/konnect_discovery.py@@
+
+  konnect-template-base:
+    content: |
+@@FILE server/templates/_base.html@@
+
+  konnect-template-footer:
+    content: |
+@@FILE server/templates/sso_footer.html@@
+
+  konnect-template-handle:
+    content: |
+@@FILE server/templates/sso_auth_account_details.html@@

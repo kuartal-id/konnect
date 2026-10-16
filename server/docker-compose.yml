@@ -1,19 +1,22 @@
 # Konnect chat server: Synapse (Matrix) + PostgreSQL + Caddy (automatic HTTPS).
 #
-# Made for Hostinger VPS → Docker Manager → "Compose" with no terminal:
-#   1. Paste this file (or its GitHub raw URL).
-#   2. Fill in the four settings below in the Environment section. None of them are secrets.
-#   3. Deploy.
-# On first start, the `setup` container writes the server config and creates every password
-# and key by itself, into the `synapse-data` volume. Nobody has to copy or paste a secret.
-# Full guide: docs/SERVER.md. Needs Docker Compose 2.23 or newer (Hostinger has it).
+# GENERATED FILE. Edit server/compose.template.yml, setup.py, modules/ or templates/ and run
+# `python3 server/build_compose.py`. CI fails if this file is out of date.
 #
-# Settings (Environment):
-#   MATRIX_HOST           Address of this server, e.g. matrix.kuartalsystems.com (DNS A record → this VPS)
-#   SERVER_NAME           The part after ":" in everyone's Konnect ID, e.g. kuartal.id → @diemas:kuartal.id
-#                         PERMANENT: it can't be changed after the first account exists.
-#   KONNECT_URL           Where the Konnect web app lives, e.g. https://konnect.kuartalsystems.com
-#   KUARTAL_ID_CLIENT_ID  The Konnect client ID registered in Kuartal ID (public client with PKCE)
+# One self-contained file for a Hostinger VPS with Docker. Nothing to fill in: every setting has the
+# Kuartal default below, and every password/key is created on the server the first time it starts.
+# Full guide: docs/SERVER.md.
+#
+# Optional settings (Docker Manager → Environment, or a .env file next to this one):
+#   MATRIX_HOST               default matrix.kuartalsystems.com (DNS A record → this VPS)
+#   SERVER_NAME               default kuartal.id: the end of every Konnect ID. PERMANENT once used.
+#   KONNECT_URL               default https://konnect.kuartalsystems.com
+#   KUARTAL_ID_CLIENT_ID      default: Konnect's registered public client in Kuartal ID
+#   WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TEMPLATE, WHATSAPP_LANGUAGE
+#                             turn on phone-number verification codes over WhatsApp (docs/SERVER.md)
+#
+# Shares the VPS with Kuartal AI: this stack only uses ports 80/443 and its own private network.
+# Needs Docker Compose 2.23 or newer.
 
 name: konnect
 
@@ -21,18 +24,23 @@ services:
   setup:
     image: matrixdotorg/synapse:v1.163.0
     restart: "no"
-    entrypoint: ["python", "/konnect-setup.py"]
+    entrypoint: ["python", "/konnect/setup.py"]
     environment:
-      MATRIX_HOST: ${MATRIX_HOST:?Set MATRIX_HOST}
-      SERVER_NAME: ${SERVER_NAME:?Set SERVER_NAME}
-      KONNECT_URL: ${KONNECT_URL:?Set KONNECT_URL}
-      KUARTAL_ID_CLIENT_ID: ${KUARTAL_ID_CLIENT_ID:-}
+      MATRIX_HOST: ${MATRIX_HOST:-matrix.kuartalsystems.com}
+      SERVER_NAME: ${SERVER_NAME:-kuartal.id}
+      KONNECT_URL: ${KONNECT_URL:-https://konnect.kuartalsystems.com}
+      KUARTAL_ID_CLIENT_ID: ${KUARTAL_ID_CLIENT_ID:-14d2db71-041a-4841-aca5-3218ff8b0023}
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_TEMPLATE: ${WHATSAPP_TEMPLATE:-konnect_code}
+      WHATSAPP_LANGUAGE: ${WHATSAPP_LANGUAGE:-en}
     configs:
       - source: konnect-setup
-        target: /konnect-setup.py
+        target: /konnect/setup.py
     volumes:
       - synapse-data:/data
       - db-secret:/secrets
+    networks: [internal]
 
   db:
     image: postgres:16-alpine
@@ -65,6 +73,16 @@ services:
         condition: service_healthy
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      PYTHONPATH: /konnect/modules
+    configs:
+      - source: konnect-discovery
+        target: /konnect/modules/konnect_discovery.py
+      - source: konnect-template-base
+        target: /konnect/templates/_base.html
+      - source: konnect-template-footer
+        target: /konnect/templates/sso_footer.html
+      - source: konnect-template-handle
+        target: /konnect/templates/sso_auth_account_details.html
     volumes:
       - synapse-data:/data
     healthcheck:
@@ -75,7 +93,7 @@ services:
     networks: [internal, web]
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.10-alpine
     restart: unless-stopped
     depends_on:
       synapse:
@@ -106,9 +124,9 @@ volumes:
 configs:
   caddyfile:
     content: |
-      ${MATRIX_HOST} {
+      ${MATRIX_HOST:-matrix.kuartalsystems.com} {
         encode zstd gzip
-        # Chat API and the Kuartal ID sign-in pages. The admin API stays private.
+        # Chat API, Kuartal ID sign-in pages and Konnect discovery. The admin API stays private.
         reverse_proxy /_matrix/* synapse:8008
         reverse_proxy /_synapse/client/* synapse:8008
         respond / "Konnect server is running." 200
@@ -116,53 +134,131 @@ configs:
 
   konnect-setup:
     content: |
-      # Writes /data/homeserver.yaml once, with fresh random secrets, then makes sure the
-      # signing key exists. Safe to run on every start: an existing config is never overwritten.
-      import os, secrets, subprocess, sys
+      """
+      Konnect server setup. Runs in the `setup` container before Synapse starts, on every deploy.
 
-      DATA = "/data/homeserver.yaml"
-      PW_FILE = "/secrets/db_password"
-      env = os.environ
+      - Creates the server's secrets ONCE (database password, Synapse keys, discovery pepper) and keeps
+        them in /data/konnect-secrets.json. Nobody ever copies or types a secret.
+      - Rewrites /data/homeserver.yaml from the environment on every start, so changing a setting in the
+        Docker Manager (for example adding the WhatsApp details) takes effect on the next redeploy.
+      - Refuses to change SERVER_NAME once it has been used: it is part of every account ID.
+      """
 
-      os.makedirs("/secrets", exist_ok=True)
-      if not os.path.exists(PW_FILE):
-          with open(PW_FILE, "w") as f:
-              f.write(secrets.token_urlsafe(32))
-          os.chmod(PW_FILE, 0o644)
-      db_password = open(PW_FILE).read().strip()
+      import json
+      import os
+      import secrets
+      import subprocess
+      import sys
 
-      if os.path.exists(DATA):
-          print("Konnect setup: config already exists, leaving it as is.")
-      else:
-          host = env["MATRIX_HOST"].strip().removeprefix("https://").strip("/")
-          server_name = env["SERVER_NAME"].strip()
-          konnect = env["KONNECT_URL"].strip().rstrip("/")
-          client_id = env.get("KUARTAL_ID_CLIENT_ID", "").strip()
+      DATA = "/data"
+      SECRETS = f"{DATA}/konnect-secrets.json"
+      CONFIG = f"{DATA}/homeserver.yaml"
+      DB_PASSWORD_FILE = "/secrets/db_password"
+
+
+      def env(name: str, default: str = "") -> str:
+          return (os.environ.get(name) or default).strip()
+
+
+      def q(value: str) -> str:
+          """YAML/JSON-safe quoted string."""
+          return json.dumps(value)
+
+
+      def load_secrets() -> dict:
+          if os.path.exists(SECRETS):
+              with open(SECRETS) as f:
+                  return json.load(f)
+          data = {
+              "registration_shared_secret": secrets.token_urlsafe(48),
+              "macaroon_secret_key": secrets.token_urlsafe(48),
+              "form_secret": secrets.token_urlsafe(48),
+              "discovery_pepper": secrets.token_urlsafe(48),
+          }
+          if os.path.exists(DB_PASSWORD_FILE):
+              with open(DB_PASSWORD_FILE) as f:
+                  data["db_password"] = f.read().strip()
+          else:
+              data["db_password"] = secrets.token_urlsafe(32)
+          save_secrets(data)
+          return data
+
+
+      def save_secrets(data: dict) -> None:
+          tmp = SECRETS + ".tmp"
+          with open(tmp, "w") as f:
+              json.dump(data, f, indent=2)
+          os.chmod(tmp, 0o600)
+          os.replace(tmp, SECRETS)
+
+
+      def main() -> None:
+          os.makedirs(DATA, exist_ok=True)
+          os.makedirs("/secrets", exist_ok=True)
+          s = load_secrets()
+
+          # Postgres reads its password from this shared file on first start.
+          if not os.path.exists(DB_PASSWORD_FILE):
+              with open(DB_PASSWORD_FILE, "w") as f:
+                  f.write(s["db_password"])
+              os.chmod(DB_PASSWORD_FILE, 0o644)
+
+          host = env("MATRIX_HOST", "matrix.kuartalsystems.com").removeprefix("https://").strip("/")
+          server_name = env("SERVER_NAME", "kuartal.id")
+          konnect_url = env("KONNECT_URL", "https://konnect.kuartalsystems.com").rstrip("/")
+          issuer = env("KUARTAL_ID_ISSUER", "https://id.kuartal.id").rstrip("/")
+          client_id = env("KUARTAL_ID_CLIENT_ID", "14d2db71-041a-4841-aca5-3218ff8b0023")
+
+          locked = s.get("server_name")
+          if locked and locked != server_name:
+              sys.exit(
+                  f"Konnect setup: SERVER_NAME is {server_name!r} but this server was created as {locked!r}. "
+                  "It can't change once accounts exist. Set SERVER_NAME back."
+              )
+          if not locked:
+              s["server_name"] = server_name
+              save_secrets(s)
+
+          wa_token = env("WHATSAPP_TOKEN")
+          wa_number_id = env("WHATSAPP_PHONE_NUMBER_ID")
+          if wa_token and wa_number_id:
+              verifier = f"""      verifier: whatsapp
+            whatsapp:
+              token: {q(wa_token)}
+              phone_number_id: {q(wa_number_id)}
+              template: {q(env("WHATSAPP_TEMPLATE", "konnect_code"))}
+              language: {q(env("WHATSAPP_LANGUAGE", "en"))}"""
+          else:
+              verifier = "      verifier: none"
+
           sso = ""
           if client_id:
               sso = f"""
       oidc_providers:
         - idp_id: kuartal
           idp_name: "Kuartal ID"
-          issuer: "https://id.kuartal.id"
+          issuer: {q(issuer)}
           discover: true
-          client_id: "{client_id}"
+          client_id: {q(client_id)}
           client_auth_method: none
           pkce_method: always
           scopes: ["openid", "profile", "email"]
+          user_profile_method: userinfo_endpoint
           allow_existing_users: false
           user_mapping_provider:
             config:
-              localpart_template: "{{{{ user.email.split('@')[0] }}}}"
+              localpart_template: "{{{{ user.email.split('@')[0] | lower }}}}"
               display_name_template: "{{{{ user.name }}}}"
-              email_template: "{{{{ user.email }}}}"
               confirm_localpart: true
       """
-          config = f"""# Konnect chat server. Generated once by the setup container.
-      server_name: "{server_name}"
-      public_baseurl: "https://{host}/"
+
+          config = f"""# Konnect chat server. WRITTEN BY THE SETUP CONTAINER ON EVERY START: edit the Docker settings,
+      # not this file. Secrets live in /data/konnect-secrets.json (created once, never printed).
+      server_name: {q(server_name)}
+      public_baseurl: {q(f"https://{host}/")}
       pid_file: /data/homeserver.pid
       report_stats: false
+      log_config: /data/log.config
 
       listeners:
         - port: 8008
@@ -182,7 +278,7 @@ configs:
         name: psycopg2
         args:
           user: synapse
-          password: "{db_password}"
+          password: {q(s["db_password"])}
           database: synapse
           host: db
           cp_min: 5
@@ -190,9 +286,9 @@ configs:
 
       media_store_path: /data/media_store
       signing_key_path: /data/signing.key
-      registration_shared_secret: "{secrets.token_urlsafe(48)}"
-      macaroon_secret_key: "{secrets.token_urlsafe(48)}"
-      form_secret: "{secrets.token_urlsafe(48)}"
+      registration_shared_secret: {q(s["registration_shared_secret"])}
+      macaroon_secret_key: {q(s["macaroon_secret_key"])}
+      form_secret: {q(s["form_secret"])}
       max_upload_size: 50M
 
       # Accounts come from Kuartal ID. Open sign-up is off.
@@ -200,24 +296,746 @@ configs:
       password_config:
         enabled: true
 
+      # Search covers everyone on this server; the discovery module hides people who opted out.
       user_directory:
         enabled: true
         search_all_users: true
 
-      # Allow the Konnect web app to receive the sign-in redirect.
       sso:
         client_whitelist:
-          - "{konnect}/"
+          - {q(konnect_url + "/")}
         update_profile_information: true
+
+      # Konnect-branded sign-in pages (server/templates in the repo).
+      templates:
+        custom_template_directory: /konnect/templates
 
       # New chats are end-to-end encrypted by default, also for other Matrix apps.
       encryption_enabled_by_default_for_room_type: all
 
+      modules:
+        - module: konnect_discovery.KonnectDiscovery
+          config:
+            pepper: {q(s["discovery_pepper"])}
+            default_region: {q(env("PHONE_DEFAULT_REGION", "ID"))}
+      {verifier}
       {sso}"""
-          with open(DATA, "w") as f:
-              f.write(config)
-          print("Konnect setup: wrote", DATA)
 
-      subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "--config-path", DATA, "--generate-keys"], check=True)
-      subprocess.run(["chown", "-R", "991:991", "/data"], check=False)
-      print("Konnect setup: done.")
+          with open(CONFIG + ".tmp", "w") as f:
+              f.write(config)
+          os.chmod(CONFIG + ".tmp", 0o600)
+          os.replace(CONFIG + ".tmp", CONFIG)
+
+          if not os.path.exists(f"{DATA}/log.config"):
+              with open(f"{DATA}/log.config", "w") as f:
+                  f.write(LOG_CONFIG)
+
+          subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "--config-path", CONFIG, "--generate-keys"], check=True)
+          subprocess.run(["chown", "-R", "991:991", DATA], check=False)
+          print(f"Konnect setup: ready. Server {server_name} at https://{host}; phone codes: {'WhatsApp' if wa_token else 'off'}.")
+
+
+      # Log to the container output only (Docker keeps it), at INFO, without request bodies.
+      LOG_CONFIG = """version: 1
+      formatters:
+        precise:
+          format: '%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(request)s - %(message)s'
+      filters:
+        context:
+          (): synapse.logging.context.LoggingContextFilter
+          request: ""
+      handlers:
+        console:
+          class: logging.StreamHandler
+          formatter: precise
+          filters: [context]
+      loggers:
+        synapse.storage.SQL:
+          level: WARNING
+      root:
+        level: INFO
+        handlers: [console]
+      disable_existing_loggers: false
+      """
+
+      if __name__ == "__main__":
+          main()
+
+  konnect-discovery:
+    content: |
+      """
+      Konnect discovery: how people find each other on Konnect, and how each person controls it.
+
+      Runs inside Synapse as a module (configured under `modules:` in homeserver.yaml).
+
+      What it does
+      - Handle search: everyone can be found by @handle or name in search, unless they switch
+        "Show me in search" off. Then only people who type their exact @handle can reach them.
+        Enforced on the server through Synapse's user-directory filter.
+      - Phone numbers: a person can add ONE phone number, proven with a 6-digit code sent over WhatsApp.
+        Only a keyed hash (HMAC-SHA256 with a server secret) and a masked form like "+62 ••• 6789" are
+        stored, never the number itself. They choose whether people who know the number can find them.
+      - Phone lookup: signed-in people can look up a number they already know. It returns a match only if
+        that person turned phone lookup on. Lookups are rate-limited per person to stop number guessing.
+
+      HTTP API (Matrix access token required), mounted at /_synapse/client/konnect/v1/:
+        GET    settings                          -> current choices, masked phone, whether codes can be sent
+        PUT    settings      {handle_search?, phone_lookup?}
+        POST   phone/start   {phone}             -> sends a code
+        POST   phone/confirm {code, phone_lookup}
+        DELETE phone
+        POST   lookup/phone  {phone}             -> {user_id, display_name} or 404
+      """
+
+      from __future__ import annotations
+
+      import hashlib
+      import hmac
+      import logging
+      import secrets
+      import time
+      from collections import defaultdict, deque
+      from typing import TYPE_CHECKING, Any
+
+      import attr
+      import phonenumbers
+      from synapse.api.errors import Codes, SynapseError
+      from synapse.http.server import DirectServeJsonResource
+      from synapse.http.servlet import parse_json_object_from_request
+      from synapse.module_api import ModuleApi
+      from synapse.types import UserProfile
+
+      if TYPE_CHECKING:
+          from synapse.http.site import SynapseRequest
+
+      logger = logging.getLogger(__name__)
+
+      BASE_PATH = "/_synapse/client/konnect/v1"
+      CODE_TTL_S = 10 * 60
+      CODE_MAX_ATTEMPTS = 5
+
+
+      @attr.s(auto_attribs=True, frozen=True)
+      class WhatsAppConfig:
+          token: str
+          phone_number_id: str
+          template: str = "konnect_code"
+          language: str = "en"
+          api_version: str = "v23.0"
+          api_base: str = "https://graph.facebook.com"
+
+
+      @attr.s(auto_attribs=True, frozen=True)
+      class DiscoveryConfig:
+          pepper: bytes
+          default_region: str = "ID"
+          verifier: str = "none"  # none | whatsapp | log (log is for local testing only)
+          whatsapp: WhatsAppConfig | None = None
+          lookups_per_hour: int = 30
+          lookups_per_day: int = 100
+          codes_per_hour: int = 3
+
+
+      class KonnectDiscovery:
+          def __init__(self, config: DiscoveryConfig, api: ModuleApi):
+              self.config = config
+              self.api = api
+              self._tables_ready = False
+              self._lookups: dict[str, deque[float]] = defaultdict(deque)
+              self._codes_sent: dict[str, deque[float]] = defaultdict(deque)
+
+              api.register_spam_checker_callbacks(check_username_for_spam=self.check_username_for_spam)
+              api.register_web_resource(BASE_PATH, DiscoveryResource(self))
+
+          # ---- Config ------------------------------------------------------------------------------
+
+          @staticmethod
+          def parse_config(raw: dict[str, Any]) -> DiscoveryConfig:
+              pepper = str(raw.get("pepper") or "")
+              if len(pepper) < 32:
+                  raise Exception("konnect_discovery: 'pepper' must be a random secret of at least 32 characters")
+              verifier = str(raw.get("verifier") or "none")
+              if verifier not in ("none", "whatsapp", "log"):
+                  raise Exception("konnect_discovery: 'verifier' must be none, whatsapp or log")
+              if verifier == "log" and not raw.get("allow_insecure_log_verifier"):
+                  raise Exception("konnect_discovery: the 'log' verifier is for local testing only")
+              whatsapp = None
+              wa = raw.get("whatsapp") or {}
+              if verifier == "whatsapp":
+                  if not wa.get("token") or not wa.get("phone_number_id"):
+                      raise Exception("konnect_discovery: whatsapp.token and whatsapp.phone_number_id are required")
+                  whatsapp = WhatsAppConfig(
+                      token=str(wa["token"]),
+                      phone_number_id=str(wa["phone_number_id"]),
+                      template=str(wa.get("template") or "konnect_code"),
+                      language=str(wa.get("language") or "en"),
+                      api_version=str(wa.get("api_version") or "v23.0"),
+                      api_base=str(wa.get("api_base") or "https://graph.facebook.com").rstrip("/"),
+                  )
+              limits = raw.get("limits") or {}
+              return DiscoveryConfig(
+                  pepper=pepper.encode("utf-8"),
+                  default_region=str(raw.get("default_region") or "ID").upper(),
+                  verifier=verifier,
+                  whatsapp=whatsapp,
+                  lookups_per_hour=int(limits.get("lookups_per_hour", 30)),
+                  lookups_per_day=int(limits.get("lookups_per_day", 100)),
+                  codes_per_hour=int(limits.get("codes_per_hour", 3)),
+              )
+
+          # ---- Storage -------------------------------------------------------------------------------
+
+          async def ensure_tables(self) -> None:
+              if self._tables_ready:
+                  return
+
+              def create(txn: Any) -> None:
+                  txn.execute(
+                      "CREATE TABLE IF NOT EXISTS konnect_discovery_settings ("
+                      " user_id TEXT PRIMARY KEY, handle_search INTEGER NOT NULL,"
+                      " phone_lookup INTEGER NOT NULL, updated_ts BIGINT NOT NULL)"
+                  )
+                  txn.execute(
+                      "CREATE TABLE IF NOT EXISTS konnect_phones ("
+                      " phone_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE,"
+                      " masked TEXT NOT NULL, verified_ts BIGINT NOT NULL)"
+                  )
+                  txn.execute(
+                      "CREATE TABLE IF NOT EXISTS konnect_phone_codes ("
+                      " user_id TEXT PRIMARY KEY, phone_hash TEXT NOT NULL, masked TEXT NOT NULL,"
+                      " code_hash TEXT NOT NULL, expires_ts BIGINT NOT NULL, attempts INTEGER NOT NULL)"
+                  )
+
+              await self.api.run_db_interaction("konnect_discovery_create_tables", create)
+              self._tables_ready = True
+
+          async def get_settings(self, user_id: str) -> dict[str, bool]:
+              await self.ensure_tables()
+
+              def get(txn: Any) -> Any:
+                  txn.execute(
+                      "SELECT handle_search, phone_lookup FROM konnect_discovery_settings WHERE user_id = ?",
+                      (user_id,),
+                  )
+                  return txn.fetchone()
+
+              row = await self.api.run_db_interaction("konnect_discovery_get_settings", get)
+              if not row:
+                  return {"handle_search": True, "phone_lookup": False}
+              return {"handle_search": bool(row[0]), "phone_lookup": bool(row[1])}
+
+          async def set_settings(self, user_id: str, handle_search: bool, phone_lookup: bool) -> None:
+              await self.ensure_tables()
+
+              def put(txn: Any) -> None:
+                  txn.execute("DELETE FROM konnect_discovery_settings WHERE user_id = ?", (user_id,))
+                  txn.execute(
+                      "INSERT INTO konnect_discovery_settings (user_id, handle_search, phone_lookup, updated_ts)"
+                      " VALUES (?, ?, ?, ?)",
+                      (user_id, int(handle_search), int(phone_lookup), _now_ms()),
+                  )
+
+              await self.api.run_db_interaction("konnect_discovery_set_settings", put)
+
+          async def get_phone(self, user_id: str) -> dict[str, Any] | None:
+              await self.ensure_tables()
+
+              def get(txn: Any) -> Any:
+                  txn.execute("SELECT masked, verified_ts FROM konnect_phones WHERE user_id = ?", (user_id,))
+                  return txn.fetchone()
+
+              row = await self.api.run_db_interaction("konnect_discovery_get_phone", get)
+              return {"masked": row[0], "verified_ts": row[1]} if row else None
+
+          # ---- Phone numbers -------------------------------------------------------------------------
+
+          def normalize(self, raw: Any) -> str:
+              if not isinstance(raw, str) or not raw.strip():
+                  raise SynapseError(400, "Enter a phone number.", Codes.MISSING_PARAM)
+              text = raw.strip()
+              # People in Indonesia often write 62812... without the plus.
+              if text[0].isdigit() and not text.startswith("0") and len(_digits(text)) >= 10:
+                  candidates = ["+" + _digits(text), text]
+              else:
+                  candidates = [text]
+              for candidate in candidates:
+                  try:
+                      parsed = phonenumbers.parse(candidate, self.config.default_region)
+                  except phonenumbers.NumberParseException:
+                      continue
+                  if phonenumbers.is_valid_number(parsed):
+                      return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+              raise SynapseError(400, "That isn't a valid phone number. Include the country code, like +62.", Codes.INVALID_PARAM)
+
+          def phone_hash(self, e164: str) -> str:
+              return hmac.new(self.config.pepper, e164.encode("utf-8"), hashlib.sha256).hexdigest()
+
+          def code_hash(self, user_id: str, code: str) -> str:
+              return hmac.new(self.config.pepper, f"code|{user_id}|{code}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+          @staticmethod
+          def mask(e164: str) -> str:
+              parsed = phonenumbers.parse(e164, None)
+              national = str(parsed.national_number)
+              return f"+{parsed.country_code} ••• {national[-4:]}"
+
+          async def start_verification(self, user_id: str, raw_phone: Any) -> dict[str, Any]:
+              if self.config.verifier == "none":
+                  raise SynapseError(
+                      503, "Phone verification isn't switched on for this server yet.", "KONNECT_PHONE_UNAVAILABLE"
+                  )
+              e164 = self.normalize(raw_phone)
+              phone_hash = self.phone_hash(e164)
+              _take(self._codes_sent[user_id], self.config.codes_per_hour, 3600, "Too many codes requested. Try again in an hour.")
+              _take(self._codes_sent["phone:" + phone_hash], self.config.codes_per_hour, 3600, "Too many codes for that number. Try again in an hour.")
+
+              code = f"{secrets.randbelow(1_000_000):06d}"
+              masked = self.mask(e164)
+              await self.ensure_tables()
+
+              def put(txn: Any) -> None:
+                  txn.execute("DELETE FROM konnect_phone_codes WHERE user_id = ?", (user_id,))
+                  txn.execute(
+                      "INSERT INTO konnect_phone_codes (user_id, phone_hash, masked, code_hash, expires_ts, attempts)"
+                      " VALUES (?, ?, ?, ?, ?, 0)",
+                      (user_id, phone_hash, masked, self.code_hash(user_id, code), _now_ms() + CODE_TTL_S * 1000),
+                  )
+
+              await self.api.run_db_interaction("konnect_discovery_store_code", put)
+              await self.send_code(e164, code)
+              return {"masked": masked, "expires_in": CODE_TTL_S}
+
+          async def send_code(self, e164: str, code: str) -> None:
+              if self.config.verifier == "log":
+                  logger.warning("KONNECT TEST CODE for %s: %s (log verifier: never use in production)", self.mask(e164), code)
+                  return
+              wa = self.config.whatsapp
+              assert wa is not None
+              body = {
+                  "messaging_product": "whatsapp",
+                  "to": e164.lstrip("+"),
+                  "type": "template",
+                  "template": {
+                      "name": wa.template,
+                      "language": {"code": wa.language},
+                      "components": [
+                          {"type": "body", "parameters": [{"type": "text", "text": code}]},
+                          {"type": "button", "sub_type": "url", "index": "0", "parameters": [{"type": "text", "text": code}]},
+                      ],
+                  },
+              }
+              url = f"{wa.api_base}/{wa.api_version}/{wa.phone_number_id}/messages"
+              try:
+                  await self.api.http_client.post_json_get_json(url, body, headers={"Authorization": [f"Bearer {wa.token}"]})
+              except Exception:
+                  logger.exception("Konnect: sending the WhatsApp code failed")
+                  raise SynapseError(502, "Couldn't send the code over WhatsApp. Try again in a moment.", Codes.UNKNOWN)
+
+          async def confirm_verification(self, user_id: str, code: Any, phone_lookup: bool) -> dict[str, Any]:
+              if not isinstance(code, str) or not code.strip().isdigit():
+                  raise SynapseError(400, "Enter the 6-digit code.", Codes.INVALID_PARAM)
+              code = code.strip()
+              expected = self.code_hash(user_id, code)
+              await self.ensure_tables()
+
+              def check(txn: Any) -> Any:
+                  txn.execute(
+                      "SELECT phone_hash, masked, code_hash, expires_ts, attempts FROM konnect_phone_codes WHERE user_id = ?",
+                      (user_id,),
+                  )
+                  row = txn.fetchone()
+                  if not row:
+                      return "missing"
+                  phone_hash, masked, code_hash, expires_ts, attempts = row
+                  if expires_ts < _now_ms() or attempts >= CODE_MAX_ATTEMPTS:
+                      txn.execute("DELETE FROM konnect_phone_codes WHERE user_id = ?", (user_id,))
+                      return "expired"
+                  if not hmac.compare_digest(code_hash, expected):
+                      txn.execute("UPDATE konnect_phone_codes SET attempts = attempts + 1 WHERE user_id = ?", (user_id,))
+                      return "wrong"
+                  txn.execute("DELETE FROM konnect_phone_codes WHERE user_id = ?", (user_id,))
+                  # A number belongs to whoever proved it most recently (numbers get recycled).
+                  txn.execute("DELETE FROM konnect_phones WHERE phone_hash = ? OR user_id = ?", (phone_hash, user_id))
+                  txn.execute(
+                      "INSERT INTO konnect_phones (phone_hash, user_id, masked, verified_ts) VALUES (?, ?, ?, ?)",
+                      (phone_hash, user_id, masked, _now_ms()),
+                  )
+                  return masked
+
+              result = await self.api.run_db_interaction("konnect_discovery_confirm_code", check)
+              if result == "missing":
+                  raise SynapseError(400, "Request a new code first.", Codes.INVALID_PARAM)
+              if result == "expired":
+                  raise SynapseError(400, "That code has expired. Request a new one.", Codes.INVALID_PARAM)
+              if result == "wrong":
+                  raise SynapseError(400, "That code isn't right.", Codes.INVALID_PARAM)
+              settings = await self.get_settings(user_id)
+              await self.set_settings(user_id, settings["handle_search"], bool(phone_lookup))
+              return {"masked": result}
+
+          async def remove_phone(self, user_id: str) -> None:
+              await self.ensure_tables()
+
+              def delete(txn: Any) -> None:
+                  txn.execute("DELETE FROM konnect_phones WHERE user_id = ?", (user_id,))
+                  txn.execute("DELETE FROM konnect_phone_codes WHERE user_id = ?", (user_id,))
+
+              await self.api.run_db_interaction("konnect_discovery_remove_phone", delete)
+              settings = await self.get_settings(user_id)
+              await self.set_settings(user_id, settings["handle_search"], False)
+
+          async def lookup_phone(self, requester: str, raw_phone: Any) -> dict[str, Any]:
+              _take(self._lookups[requester], self.config.lookups_per_hour, 3600, "Too many lookups. Try again later.")
+              _take(self._lookups["day:" + requester], self.config.lookups_per_day, 86400, "Too many lookups today.")
+              e164 = self.normalize(raw_phone)
+              await self.ensure_tables()
+
+              def find(txn: Any) -> Any:
+                  txn.execute(
+                      "SELECT p.user_id FROM konnect_phones p"
+                      " JOIN konnect_discovery_settings s ON s.user_id = p.user_id"
+                      " WHERE p.phone_hash = ? AND s.phone_lookup = 1",
+                      (self.phone_hash(e164),),
+                  )
+                  return txn.fetchone()
+
+              row = await self.api.run_db_interaction("konnect_discovery_lookup_phone", find)
+              not_found = SynapseError(404, "No one on Konnect can be found with that number.", Codes.NOT_FOUND)
+              if not row or row[0] == requester:
+                  raise not_found
+              info = await self.api.get_userinfo_by_id(row[0])
+              if not info or info.is_deactivated or info.locked or info.suspended:
+                  raise not_found
+              display_name = None
+              try:
+                  profile = await self.api.get_profile_for_user(info.user_id.localpart)
+                  display_name = profile.display_name
+              except Exception:
+                  pass
+              return {"user_id": row[0], "display_name": display_name}
+
+          # ---- User directory filter -----------------------------------------------------------------
+
+          async def check_username_for_spam(self, user_profile: UserProfile, requester_id: str) -> bool:
+              """Returning True hides this person from search results."""
+              user_id = user_profile["user_id"]
+              if user_id == requester_id:
+                  return False
+              try:
+                  return not (await self.get_settings(user_id))["handle_search"]
+              except Exception:
+                  logger.exception("Konnect: couldn't read discovery settings; hiding %s from search", user_id)
+                  return True
+
+
+      class DiscoveryResource(DirectServeJsonResource):
+          isLeaf = True
+
+          def __init__(self, module: KonnectDiscovery):
+              super().__init__()
+              self.module = module
+
+          def _route(self, request: "SynapseRequest") -> str:
+              path = request.path.decode("utf-8") if request.path else ""
+              return path[len(BASE_PATH) :].strip("/") if path.startswith(BASE_PATH) else ""
+
+          async def _async_render_OPTIONS(self, request: "SynapseRequest") -> tuple[int, dict]:
+              return 200, {}
+
+          async def _async_render_GET(self, request: "SynapseRequest") -> tuple[int, dict]:
+              user_id = await self._user(request)
+              if self._route(request) != "settings":
+                  raise SynapseError(404, "Not found", Codes.NOT_FOUND)
+              settings = await self.module.get_settings(user_id)
+              phone = await self.module.get_phone(user_id)
+              return 200, {
+                  "handle_search": settings["handle_search"],
+                  "phone": {"masked": phone["masked"], "lookup": settings["phone_lookup"]} if phone else None,
+                  "phone_verification": self.module.config.verifier != "none",
+              }
+
+          async def _async_render_PUT(self, request: "SynapseRequest") -> tuple[int, dict]:
+              user_id = await self._user(request)
+              if self._route(request) != "settings":
+                  raise SynapseError(404, "Not found", Codes.NOT_FOUND)
+              body = parse_json_object_from_request(request)
+              current = await self.module.get_settings(user_id)
+              handle_search = _bool(body.get("handle_search"), current["handle_search"])
+              phone_lookup = _bool(body.get("phone_lookup"), current["phone_lookup"])
+              if phone_lookup and not await self.module.get_phone(user_id):
+                  phone_lookup = False
+              await self.module.set_settings(user_id, handle_search, phone_lookup)
+              return 200, {"handle_search": handle_search, "phone_lookup": phone_lookup}
+
+          async def _async_render_POST(self, request: "SynapseRequest") -> tuple[int, dict]:
+              user_id = await self._user(request)
+              route = self._route(request)
+              body = parse_json_object_from_request(request)
+              if route == "phone/start":
+                  return 200, await self.module.start_verification(user_id, body.get("phone"))
+              if route == "phone/confirm":
+                  return 200, await self.module.confirm_verification(user_id, body.get("code"), bool(body.get("phone_lookup", True)))
+              if route == "lookup/phone":
+                  return 200, await self.module.lookup_phone(user_id, body.get("phone"))
+              raise SynapseError(404, "Not found", Codes.NOT_FOUND)
+
+          async def _async_render_DELETE(self, request: "SynapseRequest") -> tuple[int, dict]:
+              user_id = await self._user(request)
+              if self._route(request) != "phone":
+                  raise SynapseError(404, "Not found", Codes.NOT_FOUND)
+              await self.module.remove_phone(user_id)
+              return 200, {}
+
+          async def _user(self, request: "SynapseRequest") -> str:
+              requester = await self.module.api.get_user_by_req(request)
+              return requester.user.to_string()
+
+
+      def _now_ms() -> int:
+          return int(time.time() * 1000)
+
+
+      def _digits(text: str) -> str:
+          return "".join(ch for ch in text if ch.isdigit())
+
+
+      def _bool(value: Any, default: bool) -> bool:
+          return value if isinstance(value, bool) else default
+
+
+      def _take(window: deque[float], limit: int, period_s: int, message: str) -> None:
+          now = time.monotonic()
+          while window and now - window[0] > period_s:
+              window.popleft()
+          if len(window) >= limit:
+              raise SynapseError(429, message, Codes.LIMIT_EXCEEDED)
+          window.append(now)
+
+  konnect-template-base:
+    content: |
+      {#- Konnect: replaces Synapse's default page frame (no Matrix/Element logos, no external images). -#}
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+          <meta charset="UTF-8">
+          <meta http-equiv="X-UA-Compatible" content="IE=edge">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>{% block title %}{% endblock %} · Konnect</title>
+          <style type="text/css">
+            {%- include 'style.css' without context %}
+            body { font-family: "Poppins", -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #16181d; background: #eef0ec; padding: 0 16px; box-sizing: border-box; }
+            .konnect-brand { display: flex; align-items: center; gap: 10px; justify-content: center; margin: 32px 0 8px; font-weight: 600; font-size: 20px; }
+            .konnect-brand svg { flex: none; }
+          </style>
+          {% block header %}{%  endblock %}
+      </head>
+      <body>
+      <div class="konnect-brand">
+        <svg width="36" height="36" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0f766e"/><path d="M20 18v28M20 32l14-14M24 29l14 17" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="45" cy="21" r="4" fill="#fff"/></svg>
+        <span>Konnect</span>
+      </div>
+
+      {% block body %}{% endblock %}
+
+      </body>
+      </html>
+
+  konnect-template-footer:
+    content: |
+      <footer>
+        <p>Kuartal Konnect · encrypted chat by PT Kuartal Financial Group</p>
+      </footer>
+
+  konnect-template-handle:
+    content: |
+      {#- Konnect: adapted from Synapse's sso_auth_account_details.html (Synapse is AGPL-3.0; this public repo publishes the change). Form and script are unchanged. Shown once, on someone's first Kuartal ID sign-in. -#}
+      {% extends "_base.html" %}
+      {% block title %}Choose your handle{% endblock %}
+
+      {% block header %}
+      <script type="text/javascript">
+        let wasKeyboard = false;
+        document.addEventListener("mousedown", function() { wasKeyboard = false; });
+        document.addEventListener("keydown", function() { wasKeyboard = true; });
+        document.addEventListener("focusin", function() {
+          if (wasKeyboard) {
+            document.body.classList.add("keyboard-focus");
+          } else {
+            document.body.classList.remove("keyboard-focus");
+          }
+        });
+      </script>
+      <style type="text/css">
+        {% include "sso.css" without context %}
+
+        body.keyboard-focus :focus, body.keyboard-focus .username_input:focus-within {
+          outline: 3px solid #0f766e;
+          outline-offset: 4px;
+        }
+
+        .username_input {
+          display: flex;
+          border: 2px solid #0f766e;
+          border-radius: 8px;
+          padding: 12px;
+          position: relative;
+          margin: 16px 0;
+          align-items: center;
+          font-size: 12px;
+        }
+
+        .username_input.invalid {
+          border-color: #FE2928;
+        }
+
+        .username_input.invalid input, .username_input.invalid label {
+          color: #FE2928;
+        }
+
+        .username_input div, .username_input input {
+          line-height: 18px;
+          font-size: 14px;
+        }
+
+        .username_input label {
+          position: absolute;
+          top: -5px;
+          left: 14px;
+          font-size: 10px;
+          line-height: 10px;
+          background: white;
+          padding: 0 2px;
+        }
+
+        .username_input input {
+          flex: 1;
+          display: block;
+          min-width: 0;
+          border: none;
+        }
+
+        /* only clear the outline if we know it will be shown on the parent div using :focus-within */
+        @supports selector(:focus-within) {
+          .username_input input {
+            outline: none !important;
+          }
+        }
+
+        .username_input div {
+          color: #8D99A5;
+        }
+
+        .idp-pick-details {
+          border: 1px solid #E9ECF1;
+          border-radius: 8px;
+          margin: 24px 0;
+        }
+
+        .idp-pick-details h2 {
+          margin: 0;
+          padding: 8px 12px;
+        }
+
+        .idp-pick-details .idp-detail {
+          border-top: 1px solid #E9ECF1;
+          padding: 12px;
+          display: block;
+        }
+        .idp-pick-details .check-row {
+          display: flex;
+          align-items: center;
+        }
+
+        .idp-pick-details .check-row .name {
+          flex: 1;
+        }
+
+        .idp-pick-details .use, .idp-pick-details .idp-value {
+          color: #737D8C;
+        }
+
+        .idp-pick-details .idp-value {
+          margin: 0;
+          margin-top: 8px;
+        }
+
+        .idp-pick-details .avatar {
+          width: 53px;
+          height: 53px;
+          border-radius: 100%;
+          display: block;
+          margin-top: 8px;
+        }
+
+        output {
+          padding: 0 14px;
+          display: block;
+        }
+
+        output.error {
+          color: #FE2928;
+        }
+
+        .primary-button { background: #0f766e !important; border-color: #0f766e !important; }
+        .username_input { background: #fff; }
+        main, header { max-width: 440px; margin-left: auto; margin-right: auto; }
+      </style>
+      {% endblock %}
+
+      {% block body %}
+      <header>
+        <h1>Choose your Konnect handle</h1>
+        <p>People can find and message you as <strong>@handle</strong>. Use lowercase letters, numbers, dots, dashes or underscores. <strong>You can't change it later.</strong></p>
+        <p>You can choose in Konnect's settings whether people can find you in search, and whether they can find you by phone number.</p>
+      </header>
+      <main>
+        <form method="post" class="form__input" id="form">
+          <div class="username_input" id="username_input">
+            <label for="field-username">Handle</label>
+            <div class="prefix">@</div>
+            <input type="text" name="username" id="field-username" value="{{ user_attributes.localpart }}" autofocus autocorrect="off" autocapitalize="none">
+          </div>
+          <output for="username_input" id="field-username-output"></output>
+          <input type="submit" value="Continue to Konnect" class="primary-button">
+          {% if user_attributes.avatar_url or user_attributes.display_name or user_attributes.emails %}
+          <section class="idp-pick-details">
+            <h2>{% if idp.idp_icon %}<img src="{{ idp.idp_icon | mxc_to_http(24, 24) }}"/>{% endif %}From your {{ idp.idp_name }}</h2>
+            {% if user_attributes.avatar_url %}
+            <label class="idp-detail idp-avatar" for="idp-avatar">
+              <div class="check-row">
+                <span class="name">Avatar</span>
+                <span class="use">Use</span>
+                <input type="checkbox" name="use_avatar" id="idp-avatar" value="true" checked>
+              </div>
+              <img src="{{ user_attributes.avatar_url }}" class="avatar" />
+            </label>
+            {% endif %}
+            {% if user_attributes.display_name %}
+            <label class="idp-detail" for="idp-displayname">
+              <div class="check-row">
+                <span class="name">Display name</span>
+                <span class="use">Use</span>
+                <input type="checkbox" name="use_display_name" id="idp-displayname" value="true" checked>
+              </div>
+              <p class="idp-value">{{ user_attributes.display_name }}</p>
+            </label>
+            {% endif %}
+            {% for email in user_attributes.emails %}
+            <label class="idp-detail" for="idp-email{{ loop.index }}">
+              <div class="check-row">
+                <span class="name">E-mail</span>
+                <span class="use">Use</span>
+                <input type="checkbox" name="use_email" id="idp-email{{ loop.index }}" value="{{ email }}" checked>
+              </div>
+              <p class="idp-value">{{ email }}</p>
+            </label>
+            {% endfor %}
+          </section>
+          {% endif %}
+        </form>
+      </main>
+      {% include "sso_footer.html" without context %}
+      <script type="text/javascript">
+        {% include "sso_auth_account_details.js" without context %}
+      </script>
+      {% endblock %}
