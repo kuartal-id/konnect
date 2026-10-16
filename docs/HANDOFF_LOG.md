@@ -2,6 +2,14 @@
 
 Newest first. Every AI adds an entry before finishing.
 
+## 2026-10-17 — Claude — `claude/3-shared-caddy`
+
+**Did:** Deployed the chat server on the Kuartal VPS with Diemas. `docker compose up` started setup, Postgres and Synapse healthy, but Konnect's Caddy couldn't bind :80, because the VPS already runs host Caddy (KuartalOS `api.os` pilot). Fix applied on the VPS: `docker-compose.override.yml` (Konnect Caddy behind a profile, Synapse on `127.0.0.1:8008`) plus `/etc/caddy/konnect.caddy` imported from the host Caddyfile, validated before reload. Verified from outside: HTTPS works, and `/_matrix/client/v3/login` offers `oidc-kuartal` (Kuartal ID). This PR records both files in `server/shared-proxy/` and documents the setup and update command.
+
+**Not done / known issues:** First real Kuartal ID sign-in pending (Diemas). WhatsApp codes not configured.
+
+**Next AI should:** Don't install another web server on 80/443 on this VPS. Add sites to `/etc/caddy/` with `import` like Konnect does.
+
 ## 2026-10-16 (evening) — Claude — `claude/2-discovery`
 
 **Did:** Diemas asked to find people by @handle or phone number, with each person choosing how they're found, and to run the server on the VPS that already hosts Kuartal AI. He delegated the remaining decisions:

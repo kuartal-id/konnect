@@ -1,19 +1,15 @@
 # Konnect — Status
 
-_Last updated: 2026-10-16 (evening) by Claude. Every AI updates this file before finishing (see AGENTS.md)._
+_Last updated: 2026-10-17 by Claude. Every AI updates this file before finishing (see AGENTS.md)._
 
 ## Current stage
 
-**M1 shipped; M1.5 (discovery + server ready for the VPS) in PR #2.** The web app is live at `konnect.kuartalsystems.com` (merged PR #1). Sign-in works once the chat server is running on the VPS.
-
-PR #2 adds: finding people by @handle, name or verified phone number, each with a per-person on/off setting; Konnect-branded handle picker on first sign-in; a server file with nothing to fill in, defaulting to `kuartal.id` IDs and the Kuartal ID client; a setup that applies setting changes on every redeploy. Companion PR in `kuartal-id/kuartal-login` registers the Kuartal ID client.
+**Live.** Web app at `konnect.kuartalsystems.com`; chat server at `matrix.kuartalsystems.com` on the Kuartal VPS since 2026-10-17, behind the VPS's existing host Caddy (docs/SERVER.md). Sign in with Kuartal ID, @handles, discovery and encryption are on. Phone discovery waits for WhatsApp Cloud API details.
 
 ## Waiting on Diemas
 
-1. "go" on `konnect` PR #2 and the `kuartal-login` Konnect client PR.
-2. DNS A record `matrix.kuartalsystems.com` → the VPS IP.
-3. Start the server on the VPS (docs/SERVER.md step 3: Docker Manager → deploy from URL, or one line in the browser terminal).
-4. Optional, for phone discovery: WhatsApp Cloud API number + `konnect_code` authentication template + token (docs/SERVER.md).
+1. First real sign-in and choosing his handle.
+2. Optional: WhatsApp Cloud API number, `konnect_code` template and token for phone verification (docs/SERVER.md).
 
 ## Next up
 
@@ -26,7 +22,6 @@ PR #2 adds: finding people by @handle, name or verified phone number, each with 
 
 ## Known limitations
 
-- Ports 80/443 on the shared VPS belong to Konnect's Caddy. The KuartalOS `api.os` plan must add its site there instead of installing host Caddy (docs/SERVER.md).
 - Phone discovery needs the WhatsApp Cloud API set up; until then the app says it isn't switched on.
 - Rate limits for phone lookups are kept in memory (reset on server restart). Fine for one Synapse process.
 

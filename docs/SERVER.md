@@ -44,15 +44,27 @@ On first start, the `setup` container creates every password and key inside the 
 
 If hPanel → VPS → Security → **Firewall** has rules, allow TCP **80** and **443**. Ubuntu's own firewall (UFW) doesn't need changes, because Docker opens published ports itself.
 
-## Sharing the VPS with Kuartal AI
+## Sharing the VPS with Kuartal AI (how it's actually set up)
 
-- Konnect uses only ports **80/443** and its own private Docker networks. It doesn't touch the Kuartal AI gateway (LiteLLM on `127.0.0.1:4000`), its database, or the `kuartal-ai-gateway_private` network.
-- **Ports 80/443 now belong to Konnect's Caddy.** The KuartalOS plan for `api.os.kuartalsystems.com` (in `kuartal-id/kuartalos`, `infra/kuartal-api`) says to install Caddy on the host. That would clash. When that API is approved to go public, add its site to Konnect's Caddy instead, as one more block in `server/compose.template.yml`, proxying to the API container over a shared Docker network.
-- Sizing: Synapse + PostgreSQL for a small team uses about 1 GB RAM. Kuartal AI's gateway is light, so both fit on a KVM 2 or larger.
+The Kuartal VPS already runs **Caddy on the host** (set up for KuartalOS's `api.os.kuartalsystems.com`), which holds ports 80/443. So on this VPS Konnect does **not** run its own Caddy:
+
+- `/opt/konnect/docker-compose.override.yml` (copy of `server/shared-proxy/docker-compose.override.yml`) turns off Konnect's Caddy and publishes the chat server on `127.0.0.1:8008` only.
+- `/etc/caddy/konnect.caddy` (copy of `server/shared-proxy/konnect.caddy`) is Konnect's site. `/etc/caddy/Caddyfile` loads it with one line at the end: `import /etc/caddy/konnect.caddy`. The KuartalOS sites in that Caddyfile are untouched. The pre-Konnect copy is `/etc/caddy/Caddyfile.pre-konnect`.
+- Konnect doesn't touch the Kuartal AI gateway (`127.0.0.1:4000`), the KuartalOS API (`127.0.0.1:4100`), their databases or their Docker networks.
+
+Set up on 2026-10-17 with one paste in the browser terminal. It wrote both files, validated the Caddyfile **before** reloading, and would have restored the backup if validation failed.
+
+A fresh VPS with nothing on 80/443 doesn't need any of this: the plain `docker-compose.yml` brings its own Caddy.
 
 ## Updating
 
-Merging to `main` doesn't touch the VPS. To update: Docker Manager → `konnect` → **Redeploy** (it fetches the file again). For Option B, paste the same one line again. Settings and secrets are kept, and the config is regenerated from the latest file.
+Merging to `main` doesn't touch the VPS. To update, paste this in the browser terminal:
+
+```sh
+cd /opt/konnect && curl -fsSL https://raw.githubusercontent.com/kuartal-id/konnect/main/server/docker-compose.yml -o docker-compose.yml && docker compose up -d
+```
+
+Settings, secrets and the `docker-compose.override.yml` are kept, and the server config is regenerated from the latest file.
 
 ## Phone-number discovery (WhatsApp codes)
 
