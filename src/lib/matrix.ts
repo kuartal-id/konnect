@@ -20,6 +20,29 @@ const unlocked = new Map<string, Uint8Array<ArrayBuffer>>();
 
 export async function startClient(session: Session): Promise<MatrixClient> {
   unlocked.clear();
+  let client = makeClient(session);
+  // Rust encryption engine (same core as Element X). Keys are kept in this browser's IndexedDB.
+  try {
+    await client.initRustCrypto({ useIndexedDB: true });
+  } catch (e) {
+    if (!isStoreForAnotherSession(e)) throw e;
+    // This browser still holds the encryption store of an earlier session that ended without a
+    // clean sign-out (or of another account). That device is gone, so its store can't be used again.
+    // Clear it and start fresh; message history comes back from the recovery key.
+    await client.clearStores().catch(() => undefined);
+    client = makeClient(session);
+    await client.initRustCrypto({ useIndexedDB: true });
+  }
+  await client.startClient({ initialSyncLimit: 30, lazyLoadMembers: true });
+  return client;
+}
+
+/** The Rust store remembers which account and device created it, and refuses any other. */
+function isStoreForAnotherSession(e: unknown): boolean {
+  return /doesn't match the account in the constructor/i.test(String((e as Error)?.message ?? e));
+}
+
+function makeClient(session: Session): MatrixClient {
   const client: MatrixClient = createClient({
     baseUrl: session.homeserverUrl,
     accessToken: session.accessToken,
@@ -44,10 +67,6 @@ export async function startClient(session: Session): Promise<MatrixClient> {
       },
     },
   });
-
-  // Rust encryption engine (same core as Element X). Keys are kept in this browser's IndexedDB.
-  await client.initRustCrypto({ useIndexedDB: true });
-  await client.startClient({ initialSyncLimit: 30, lazyLoadMembers: true });
   return client;
 }
 
