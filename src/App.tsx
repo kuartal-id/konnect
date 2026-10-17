@@ -36,6 +36,9 @@ export function App() {
       const client = await startClient(session);
       client.on(HttpApiEvent.SessionLoggedOut, () => {
         client.stopClient();
+        // This device no longer exists on the server, so its local keys can't be used again.
+        void client.clearStores().catch(() => undefined);
+        void forgetCrmKey(client.getSafeUserId());
         clearSession();
         setPhase({ kind: "signed-out", error: "You were signed out on the server. Please sign in again." });
       });

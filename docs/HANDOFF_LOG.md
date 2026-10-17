@@ -2,6 +2,16 @@
 
 Newest first. Every AI adds an entry before finishing.
 
+## 2026-10-18 — Claude — `claude/5-signin-store-fix`
+
+**Did:** Diemas hit "the account in the store doesn't match the account in the constructor: expected @diemas:kuartal.id:USUJQAQKNM, got …:MDZOCJRBET" when signing in. The browser still had the Rust encryption store of an earlier device whose session ended without a clean sign-out, and that store refuses any other device. Fixes:
+- `startClient` (`src/lib/matrix.ts`) recognises that error, clears the stale store with `clearStores()`, and starts again with a fresh client. The old device is gone, so its store was unusable anyway; history comes back via the recovery key.
+- When the server ends a session (`SessionLoggedOut`), `App.tsx` now also clears the local stores and the cached CRM key, so the leftover can't happen that way again.
+
+**Tested:** Local Synapse + Playwright: sign in, then replace the saved session with a new device without signing out, reload. Old code: stuck on the error. New code: opens chats, no page errors. Typecheck and build.
+
+**Note:** Both device IDs in the error belong to `@diemas`, so the "other account" sign-in actually reused the Kuartal ID browser session of the main account. To use a second Kuartal ID account, sign out at id.kuartal.id first or use a private window.
+
 ## 2026-10-17 (night) — Claude — `claude/4-everyday-features`
 
 **Did:** Everything needed for Kuartal ID users to use Konnect day to day:

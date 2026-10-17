@@ -1,16 +1,16 @@
 # Konnect — Status
 
-_Last updated: 2026-10-17 (night) by Claude. Every AI updates this file before finishing (see AGENTS.md)._
+_Last updated: 2026-10-18 by Claude. Every AI updates this file before finishing (see AGENTS.md)._
 
 ## Current stage
 
 **Live.** Web app at `konnect.kuartalsystems.com`, chat server at `matrix.kuartalsystems.com` on the Kuartal VPS behind host Caddy (docs/SERVER.md). Diemas signed in with Kuartal ID on 2026-10-17.
 
-**M2 (everyday features) in PR #4:** encrypted files and photos; reply, edit, delete, reactions; emoji verification with contacts and between own devices, plus identity-change warnings; chat info (members, rename, leave, block); browser notifications; first-run setup; installable app (manifest and icons).
+**M2 (everyday features) merged (#4):** encrypted files and photos; reply, edit, delete, reactions; emoji verification with contacts and between own devices, plus identity-change warnings; chat info (members, rename, leave, block); browser notifications; first-run setup; installable app (manifest and icons).
 
 ## Waiting on Diemas
 
-1. "go" on PR #3 (docs) and PR #4 (everyday features).
+1. "go" on the sign-in fix PR (`claude/5-signin-store-fix`): a new sign-in in a browser that still held an old session's encryption store failed with "the account in the store doesn't match".
 2. Optional: WhatsApp Cloud API number, `konnect_code` template and token for phone verification (docs/SERVER.md).
 
 ## Next up
